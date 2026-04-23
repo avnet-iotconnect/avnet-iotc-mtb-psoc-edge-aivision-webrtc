@@ -1,0 +1,3 @@
+[submodule "lib/minih264"]
+	path = proj_cm55/third_party/minih264
+	url = https://github.com/lieff/minih264.git
