@@ -57,6 +57,9 @@
 
 #include "encode_benchmark.h"
 
+#include "ipc_communication.h"
+
+
 /* minih264 is distributed as a single-header library. This translation
  * unit owns the implementation. */
 #define MINIH264_IMPLEMENTATION
@@ -81,9 +84,11 @@
 /* Pre-sized static pools. Sized for 640x480 I420 with minih264's plain-C
  * configuration. If H264E_sizeof reports a larger requirement at runtime
  * the task aborts and prints the deficit so we know what to grow. */
-#define ENCODE_BENCHMARK_PERSIST_BYTES      (1 * 1024 * 1024)
-#define ENCODE_BENCHMARK_SCRATCH_BYTES      (2 * 1024 * 1024)
-#define ENCODE_BENCHMARK_YUV_BYTES          (640 * 480 * 3 / 2)
+
+// Nik: 640p will need too much. Limit this
+#define ENCODE_BENCHMARK_PERSIST_BYTES      (300 * 1024)
+#define ENCODE_BENCHMARK_SCRATCH_BYTES      (200 * 1024)
+#define ENCODE_BENCHMARK_YUV_BYTES          (320 * 240 * 3 / 2)
 
 /* Rate-control targets. These are conservative placeholders, the pilot
  * tunes them later. */
@@ -115,12 +120,6 @@ static uint8_t encode_benchmark_scratch[ENCODE_BENCHMARK_SCRATCH_BYTES];
 
 __attribute__((section(".cy_socmem_data"), aligned(16)))
 static uint8_t encode_benchmark_yuv[ENCODE_BENCHMARK_YUV_BYTES];
-
-static const encode_benchmark_case_t encode_benchmark_cases[] =
-{
-    { "QVGA", 320, 240, ENCODE_BENCHMARK_BITRATE_QVGA_BPS },
-    { "VGA",  640, 480, ENCODE_BENCHMARK_BITRATE_VGA_BPS  },
-};
 
 /*******************************************************************************
 * Function Name: encode_benchmark_fill_synthetic
@@ -278,8 +277,8 @@ static void encode_benchmark_run_case(const encode_benchmark_case_t *test_case)
             printf("[enc] H264E_encode failed frame %d: %d\r\n", frame_idx, status);
             return;
         }
-
         total_bytes += (uint64_t)coded_size;
+        taskYIELD(); // yield after every frame to see if inference will starve us
     }
 
     t_end = xTaskGetTickCount();
@@ -316,7 +315,13 @@ static void encode_benchmark_run_case(const encode_benchmark_case_t *test_case)
 *******************************************************************************/
 void cm55_encode_benchmark_task(void *arg)
 {
-    size_t idx;
+    const encode_benchmark_case_t encode_benchmark_cases[] =
+    {
+        { "QVGA", 320, 240, ENCODE_BENCHMARK_BITRATE_QVGA_BPS },
+        // Nik: this won't fit I think
+        // { "VGA",  640, 480, ENCODE_BENCHMARK_BITRATE_VGA_BPS  },
+    };
+
 
     CY_UNUSED_PARAMETER(arg);
 
@@ -326,6 +331,7 @@ void cm55_encode_benchmark_task(void *arg)
            ENCODE_BENCHMARK_GOP,
            ENCODE_BENCHMARK_FRAMES);
 
+    size_t idx;
     for (idx = 0; idx < (sizeof(encode_benchmark_cases) /
                          sizeof(encode_benchmark_cases[0])); idx++)
     {
@@ -334,9 +340,15 @@ void cm55_encode_benchmark_task(void *arg)
 
     printf("\r\n[enc] === benchmark complete ===\r\n");
 
+    int j = 0;
     for (;;)
-    {
-        vTaskDelay(pdMS_TO_TICKS(1000));
+    {        
+        ipc_payload_t* payload = cm55_ipc_get_payload_ptr();
+        payload->label_id = 0;
+        cm55_ipc_send_to_cm33();
+        strcpy(payload->label, "idle");
+        vTaskDelay(pdMS_TO_TICKS(10000));
+        j=(j+1) % 10; // just to track changes
     }
 }
 

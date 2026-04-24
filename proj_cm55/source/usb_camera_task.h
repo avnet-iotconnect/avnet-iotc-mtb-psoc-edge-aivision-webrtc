@@ -78,7 +78,8 @@ extern "C" {
 
 #define LOGI_TECH_C920_VID  0x046D
 /* Logitech C920 */
-#define LOGI_TECH_C920_PID  0x08E5
+#define LOGI_TECH_C920_PID 0x08E5
+#define LOGI_TECH_C920_PID_OLD  0x082D
 /* Logitech C920e */
 #define LOGI_TECH_C920e_PID 0x08B6            
 

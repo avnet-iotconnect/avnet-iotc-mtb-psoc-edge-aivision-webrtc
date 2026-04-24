@@ -141,7 +141,7 @@ CY_IGNORE+=$(SEARCH_cmsis)/COMPONENT_CMSIS_NN/Source/ConvolutionFunctions/arm_de
 # Camera type selection options
 # CAM_USB for USB Camera
 # CAM_DVP for DVP Camera
-CAMERA_TYPE = CAM_USB
+CAMERA_TYPE = CAM_DVP
 
 # Check which camera is being used
 ifeq (CAM_USB, $(CAMERA_TYPE))
@@ -182,14 +182,6 @@ CY_IGNORE+=third_party/minih264/images
 ifeq (ENABLED, $(WEBRTC_PILOT))
 DEFINES+=WEBRTC_PILOT
 INCLUDES+=third_party/minih264
-# Exclude sources that only make sense outside the pilot. The encoder
-# benchmark runs in isolation; ML inference, LCD, and the USB webcam
-# pipeline are compiled out to keep the build small and the UART clean.
-CY_IGNORE+=model
-CY_IGNORE+=lcd_utlis
-CY_IGNORE+=source/inference_task.c
-CY_IGNORE+=source/lcd_task.c
-CY_IGNORE+=source/usb_camera_task.c
 else
 # Pilot is disabled: encode_benchmark.c needs the WEBRTC_PILOT define and
 # the minih264 include path to compile. Keep it out of the default build.

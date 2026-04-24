@@ -60,7 +60,7 @@ extern "C" {
 *******************************************************************************/
 #define ENCODE_BENCHMARK_TASK_NAME          ( "CM55 Encode Benchmark" )
 #define ENCODE_BENCHMARK_TASK_STACK_SIZE    ( 8U * 1024U )
-#define ENCODE_BENCHMARK_TASK_PRIORITY      ( configMAX_PRIORITIES - 4 )
+#define ENCODE_BENCHMARK_TASK_PRIORITY      ( configMAX_PRIORITIES - 7 )
 
 /*******************************************************************************
 * Function Prototypes

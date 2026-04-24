@@ -726,7 +726,7 @@ static void _on_dev_ready(U8 dev_index)
     USBH_Logf_Application("Vendor  Id = 0x%0.4X", iface_info.VendorId);
     USBH_Logf_Application("Product Id = 0x%0.4X", iface_info.ProductId);
 
-    if ((LOGI_TECH_C920_VID == iface_info.VendorId) && (LOGI_TECH_C920_PID == iface_info.ProductId))
+    if ((LOGI_TECH_C920_VID == iface_info.VendorId) && ((LOGI_TECH_C920_PID == iface_info.ProductId) || (LOGI_TECH_C920_PID_OLD == iface_info.ProductId)))
     {
         Camera_not_supported = 0;
         frame_interval_frm_vidpid = FRAME_INTERVAL_1;

@@ -182,7 +182,7 @@ static cy_rslt_t publish_telemetry(void) {
     ipc_payload_t payload = {0};
     // useful fro debugging - making sure we have te latest data:
     // printf("Has IPC Data: %s\n", cm33_ipc_has_received_message() ? "true" : "false");
-    // cm33_ipc_safe_get_and_clear_cached_detection(&payload);
+    cm33_ipc_safe_get_and_clear_cached_detection(&payload);
     IotclMessageHandle msg = iotcl_telemetry_create();
     iotcl_telemetry_set_string(msg, "version", APP_VERSION);
     iotcl_telemetry_set_number(msg, "random", rand() % 100); // test some random numbers
@@ -228,8 +228,7 @@ void app_task(void *pvParameters) {
 
     // we want to wait for CM33 to start receiving messages to prevent halts and errors below.
     while (!cm33_ipc_has_received_message()) {
-        break; // HACK: Break for now
-        // taskYIELD(); // wait for CM55
+        taskYIELD(); // wait for CM55
     }
     printf("\nApp Task: CM55 IPC is ready. Resuming the application...\n");
 
