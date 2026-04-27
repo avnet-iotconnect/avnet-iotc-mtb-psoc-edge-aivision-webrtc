@@ -950,6 +950,7 @@ void cm55_ns_gfx_task(void *arg)
                 VG_switch_frame();
 
 #if defined(WEBRTC_HOOKS)
+                encoder_count_display_present();
                 /* Hand the just-presented camera frame off to the encoder
                  * as an additional consumer.  Snapshot of predictions is
                  * taken inside the hook so overlays match the frame. */

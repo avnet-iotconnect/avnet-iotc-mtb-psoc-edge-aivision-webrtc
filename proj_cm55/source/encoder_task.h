@@ -15,7 +15,10 @@ extern "C" {
 
 #define ENCODER_TASK_NAME           ("CM55 Encoder Task")
 #define ENCODER_TASK_STACK_SIZE     (8U * 1024U)
-#define ENCODER_TASK_PRIORITY       (configMAX_PRIORITIES - 3)
+/* Below gfx (MAX-5) and inference (MAX-4) so they run at sensor cadence
+ * and the encoder consumes leftover CPU.  Frames the encoder cannot keep
+ * up with show as missed=N/M in the log line. */
+#define ENCODER_TASK_PRIORITY       (configMAX_PRIORITIES - 6)
 
 /* Encoded frame is 320x240 BGR565, matching the camera.  Bounding boxes,
  * when enabled, are drawn in camera-space coordinates with identity scale
@@ -42,6 +45,12 @@ void cm55_encoder_task(void *arg);
  * enough for us to copy it.  Safe no-op before
  * encoder_task_start_after_vglite() has run. */
 void encoder_on_display_frame_done(prediction_od_t *pred);
+
+/* Lightweight counters for diagnostic line in the encoder task.  Bumped
+ * by inference / gfx tasks once per completed cycle.  Always safe to
+ * call (no semaphore, no allocation). */
+void encoder_count_inference_done(void);
+void encoder_count_display_present(void);
 
 #ifdef __cplusplus
 }

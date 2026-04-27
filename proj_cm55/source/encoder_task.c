@@ -56,6 +56,13 @@ static volatile bool  encoder_ready = false;
  * to encoded-frames gives both the input fps and the input-drop fraction. */
 static volatile uint32_t encoder_hook_fires = 0;
 
+/* Pipeline-stage counters bumped by inference and gfx tasks. */
+static volatile uint32_t encoder_inf_done   = 0;
+static volatile uint32_t encoder_disp_done  = 0;
+
+void encoder_count_inference_done(void) { encoder_inf_done++; }
+void encoder_count_display_present(void) { encoder_disp_done++; }
+
 /* minih264 working set, sized from M0 measurements at 320x240 plain-C.
  * H264E_sizeof() is checked at init and we abort if reality exceeds the
  * pool. */
@@ -422,22 +429,25 @@ void cm55_encoder_task(void *arg)
             float window  = now - t_prev_report;
             float fps     = (window > 0.0f) ? (1000.0f * frames / window) : 0.0f;
 
-            /* Read-and-clear the producer-side counter atomically enough
-             * for our purposes -- a hook fire that lands between these two
-             * lines is just credited to the next window. */
-            uint32_t hooks = encoder_hook_fires;
-            encoder_hook_fires = 0;
+            /* Read-and-clear the producer-side counters atomically enough
+             * for our purposes -- a fire that lands between these reads
+             * is just credited to the next window. */
+            uint32_t hooks    = encoder_hook_fires;  encoder_hook_fires = 0;
+            uint32_t inf_done = encoder_inf_done;    encoder_inf_done   = 0;
+            uint32_t dsp_done = encoder_disp_done;   encoder_disp_done  = 0;
 
-            float in_fps    = (window > 0.0f) ? (1000.0f * hooks / window) : 0.0f;
+            float in_fps    = (window > 0.0f) ? (1000.0f * hooks    / window) : 0.0f;
+            float inf_fps   = (window > 0.0f) ? (1000.0f * inf_done / window) : 0.0f;
+            float dsp_fps   = (window > 0.0f) ? (1000.0f * dsp_done / window) : 0.0f;
             uint32_t missed = (hooks > frames) ? (hooks - frames) : 0;
             float drop_pct  = (hooks > 0)      ? (100.0f * missed / hooks)  : 0.0f;
 
             const video_ring_header_t *h = video_ring_header();
-            printf("[enc] in_fps=%.2f enc_fps=%.2f missed=%u/%u (%.0f%%) "
-                   "conv_ms=%.2f enc_ms=%.2f tot_ms=%.2f nal_avg=%u idr=%d "
-                   "ring_w=%u r=%u drop=%u ovl=%d\r\n",
-                   (double)in_fps,
-                   (double)fps,
+            printf("[enc] inf_fps=%.2f dsp_fps=%.2f in_fps=%.2f enc_fps=%.2f "
+                   "missed=%u/%u (%.0f%%) conv_ms=%.2f enc_ms=%.2f tot_ms=%.2f "
+                   "nal_avg=%u idr=%d ring_w=%u r=%u drop=%u ovl=%d\r\n",
+                   (double)inf_fps, (double)dsp_fps,
+                   (double)in_fps, (double)fps,
                    (unsigned)missed, (unsigned)hooks, (double)drop_pct,
                    (double)(sum_convert / frames),
                    (double)(sum_encode  / frames),

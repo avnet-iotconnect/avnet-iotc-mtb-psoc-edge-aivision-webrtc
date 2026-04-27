@@ -59,6 +59,10 @@
 #include "mtb_ml_common.h"
 #include "mtb_ml.h"
 
+#if defined(WEBRTC_HOOKS)
+#include "encoder_task.h"
+#endif
+
 /*******************************************************************************
  * Global Variable
  *******************************************************************************/
@@ -173,7 +177,15 @@ void cm55_inference_task( void *arg )
     while (true)
     {
 #ifdef USE_DVP_CAM
-        if (frame_ready == true)
+        /* Yield to lower-priority tasks (encoder, etc.) when no camera
+         * frame is pending.  Without this the busy-poll on frame_ready
+         * never blocks, so anything below this task's priority is
+         * starved -- taskYIELD does not help across priorities. */
+        if (frame_ready != true)
+        {
+            cy_rtos_delay_milliseconds(1);
+            continue;
+        }
 #endif
         {
             if(NUM_CLASSES != api_def->func_list[0].param_list[1].shape[1].size - 5)
@@ -241,6 +253,10 @@ void cm55_inference_task( void *arg )
             if (CY_RSLT_SUCCESS != result) {
                 printf("\r\nModel Semphore set failed\r\n");
             }
+
+#if defined(WEBRTC_HOOKS)
+            encoder_count_inference_done();
+#endif
 
             _time_start_prev = _time_start;
         }
