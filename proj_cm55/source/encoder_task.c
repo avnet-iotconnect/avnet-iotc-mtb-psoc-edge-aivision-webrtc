@@ -51,6 +51,11 @@ static cy_semaphore_t encoder_semaphore;
 static cy_thread_t    encoder_thread;
 static volatile bool  encoder_ready = false;
 
+/* Producer-side cadence: incremented once per gfx-task hook.  The encoder
+ * task reads-and-clears at the same window it reports tot_ms, so the ratio
+ * to encoded-frames gives both the input fps and the input-drop fraction. */
+static volatile uint32_t encoder_hook_fires = 0;
+
 /* minih264 working set, sized from M0 measurements at 320x240 plain-C.
  * H264E_sizeof() is checked at init and we abort if reality exceeds the
  * pool. */
@@ -306,6 +311,8 @@ void encoder_on_display_frame_done(prediction_od_t *pred)
 {
     if (!encoder_ready) return;
 
+    encoder_hook_fires++;
+
     /* Copy camera frame 1:1 into our owned buffer.  Same format, same
      * size -- cheap blit, no scale, no format convert. */
     vg_lite_error_t vs = vg_lite_blit(&encoder_frame,
@@ -414,11 +421,24 @@ void cm55_encoder_task(void *arg)
             float now     = ifx_time_get_ms_f();
             float window  = now - t_prev_report;
             float fps     = (window > 0.0f) ? (1000.0f * frames / window) : 0.0f;
+
+            /* Read-and-clear the producer-side counter atomically enough
+             * for our purposes -- a hook fire that lands between these two
+             * lines is just credited to the next window. */
+            uint32_t hooks = encoder_hook_fires;
+            encoder_hook_fires = 0;
+
+            float in_fps    = (window > 0.0f) ? (1000.0f * hooks / window) : 0.0f;
+            uint32_t missed = (hooks > frames) ? (hooks - frames) : 0;
+            float drop_pct  = (hooks > 0)      ? (100.0f * missed / hooks)  : 0.0f;
+
             const video_ring_header_t *h = video_ring_header();
-            printf("[enc] f=%u fps=%.2f conv_ms=%.2f enc_ms=%.2f tot_ms=%.2f "
-                   "nal_avg=%u idr=%d ring_w=%u r=%u drop=%u ovl=%d\r\n",
-                   (unsigned)frames,
+            printf("[enc] in_fps=%.2f enc_fps=%.2f missed=%u/%u (%.0f%%) "
+                   "conv_ms=%.2f enc_ms=%.2f tot_ms=%.2f nal_avg=%u idr=%d "
+                   "ring_w=%u r=%u drop=%u ovl=%d\r\n",
+                   (double)in_fps,
                    (double)fps,
+                   (unsigned)missed, (unsigned)hooks, (double)drop_pct,
                    (double)(sum_convert / frames),
                    (double)(sum_encode  / frames),
                    (double)(sum_total   / frames),
