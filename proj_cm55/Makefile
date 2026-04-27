@@ -157,20 +157,21 @@ endif
 endif
 
 ################################################################################
-# WebRTC pilot (M0: software H.264 encoder FPS benchmark)
+# WebRTC pilot (live-pipeline encoder integration)
 #
-# When ENABLED, CM55 starts only the encode_benchmark task: ML inference,
-# LCD/GFX, and USB webcam tasks are compiled out. The pilot uses its own
-# `WEBRTC_PILOT` compile-time define so production code paths stay intact.
-# See work/reference/PILOT.md (M0).
+# WEBRTC_HOOKS is a diff-tracking flag, not a gating switch: it is always on
+# when pilot code is present. Its only job is to make pilot additions inside
+# stock files greppable, so the owner can see at a glance what changed vs.
+# the Infineon baseline. See work/reference/PILOT.md (v2, §6 Step A).
 ################################################################################
+DEFINES+=WEBRTC_HOOKS
 
-# Always exclude minih264 extras from MTB auto-discovery. Only the
-# single-file header (minih264e.h) is ever consumed; the reference test
-# app, POSIX thread pool, NEON asm, scripts and sample inputs are not
-# buildable for Cortex-M55 / bare-metal. These exclusions apply whether
-# the pilot is enabled or not, otherwise the default build walks into
-# them and fails.
+# minih264 single-header library: only minih264e.h is consumed (included
+# from encoder_task.c).  Everything else in the submodule (reference test
+# app, POSIX glue, NEON asm, scripts, sample inputs) is not buildable for
+# Cortex-M55 / bare-metal -- keep MTB auto-discovery out of those.
+CY_IGNORE+=source/encode_benchmark.c
+CY_IGNORE+=source/encode_benchmark.h
 CY_IGNORE+=third_party/minih264/minih264e_test.c
 CY_IGNORE+=third_party/minih264/system.c
 CY_IGNORE+=third_party/minih264/system.h
@@ -178,15 +179,7 @@ CY_IGNORE+=third_party/minih264/asm
 CY_IGNORE+=third_party/minih264/scripts
 CY_IGNORE+=third_party/minih264/vectors
 CY_IGNORE+=third_party/minih264/images
-
-ifeq (ENABLED, $(WEBRTC_PILOT))
-DEFINES+=WEBRTC_PILOT
 INCLUDES+=third_party/minih264
-else
-# Pilot is disabled: encode_benchmark.c needs the WEBRTC_PILOT define and
-# the minih264 include path to compile. Keep it out of the default build.
-CY_IGNORE+=source/encode_benchmark.c
-endif
 
 # RPS_DEMO_MODE = ENABLED if user wants LED indications for detections for default RPS model
 RPS_DEMO_MODE = DISABLED

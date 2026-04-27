@@ -61,7 +61,7 @@ extern "C" {
 #define IMAGE_WIDTH             320     
 #define IMAGE_HEIGHT            320
 /* If USB webcam stream is sharding, skip some frames (inference every FRAMES_TO_SKIP frames) */
-#define FRAMES_TO_SKIP          2        
+#define FRAMES_TO_SKIP          4        
 #define FRAMES_TO_SKIP_LOGITECH 4
 
 /* Object Detection Configuration. */ 

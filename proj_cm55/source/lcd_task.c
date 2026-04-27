@@ -59,6 +59,10 @@
 #include "shared_mem.h"
 #endif
 
+#if defined(WEBRTC_HOOKS)
+#include "encoder_task.h"
+#endif
+
 /*******************************************************************************
  * Macros
  *******************************************************************************/
@@ -869,6 +873,11 @@ void cm55_ns_gfx_task(void *arg)
         CY_ASSERT(0);
     }
 #endif
+#if defined(WEBRTC_HOOKS)
+    /* VGLite is initialized at this point; safe to allocate encoder_frame
+     * and launch the encoder task. */
+    encoder_task_start_after_vglite();
+#endif
     for (;;)
     {
 #ifdef USE_USB_CAM
@@ -939,6 +948,13 @@ void cm55_ns_gfx_task(void *arg)
                 update_box_data1(render_target, inference_time);
 
                 VG_switch_frame();
+
+#if defined(WEBRTC_HOOKS)
+                /* Hand the just-presented camera frame off to the encoder
+                 * as an additional consumer.  Snapshot of predictions is
+                 * taken inside the hook so overlays match the frame. */
+                encoder_on_display_frame_done(&prediction);
+#endif
 
                 time_end = ifx_time_get_ms_f();
                 time_prev = time_start;

@@ -56,8 +56,8 @@
 #ifdef USE_DVP_CAM
 #include "mtb_dvp_camera_ov7675.h"
 #endif
-#if defined(WEBRTC_PILOT)
-#include "encode_benchmark.h"
+#if defined(WEBRTC_HOOKS)
+#include "encoder_task.h"
 #endif
 
 /******************************************************************************
@@ -83,9 +83,6 @@ static cy_thread_t usb_webcam_thread;
 static cy_thread_t inference_thread;
 #endif
 static cy_thread_t gfx_thread;
-#if defined(WEBRTC_PILOT)
-static cy_thread_t encode_benchmark_thread;
-#endif
 static mtb_serial_memory_t serial_memory_obj;
 static cy_stc_smif_mem_context_t smif_mem_context;
 static cy_stc_smif_mem_info_t smif_mem_info;
@@ -408,6 +405,10 @@ int main ( void )
         CY_ASSERT(0);
     }
 
+#if defined(WEBRTC_HOOKS)
+    encoder_task_early_init();
+#endif
+
     result = cy_rtos_thread_create( &gfx_thread, &cm55_ns_gfx_task, GFX_TASK_NAME, NULL,
                                     GFX_TASK_STACK_SIZE, GFX_TASK_PRIORITY, NULL );
     if ( CY_RSLT_SUCCESS != result ) {
@@ -427,16 +428,6 @@ int main ( void )
     if ( CY_RSLT_SUCCESS != result ) {
         CY_ASSERT(0);
     }
-#endif
-
-#if defined(WEBRTC_PILOT)
-#if 0
-    result = cy_rtos_thread_create( &encode_benchmark_thread, &cm55_encode_benchmark_task, ENCODE_BENCHMARK_TASK_NAME, NULL,
-                                     ENCODE_BENCHMARK_TASK_STACK_SIZE, ENCODE_BENCHMARK_TASK_PRIORITY, NULL );
-    if ( CY_RSLT_SUCCESS != result ) {
-        CY_ASSERT(0);
-    }
-#endif
 #endif
 
 #if defined(USE_DVP_CAM)

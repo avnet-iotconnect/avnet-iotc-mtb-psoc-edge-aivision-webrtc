@@ -64,17 +64,6 @@ endif
 ML_IMAGIMOB_CPU=cm55
 
 ################################################################################
-# WebRTC pilot toggle
-#
-# Set WEBRTC_PILOT=ENABLED to build the pilot variant described in
-# work/reference/PILOT.md. In the pilot build the CM55 project runs only
-# the M0 software-encoder FPS benchmark and ML/LCD/USB-camera code is
-# compiled out. Leave DISABLED for the default machine-learning vision
-# demo.
-################################################################################
-WEBRTC_PILOT=ENABLED
-
-################################################################################
 # Advanced Configuration
 ################################################################################
 
