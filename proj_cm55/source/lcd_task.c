@@ -55,6 +55,8 @@
 #include "ifx_time_utils.h"
 #include "lcd_graphics.h"
 
+#include "ipc_communication.h"
+
 #if defined(MTB_SHARED_MEM)
 #include "shared_mem.h"
 #endif
@@ -119,7 +121,8 @@
 /*******************************************************************************
  * Global Variables
  ****************************************************************************** */
-#ifdef USE_USB_CAM
+
+ #ifdef USE_USB_CAM
 /* Last successful USB frame time*/
 static float last_successful_frame_time = 0;
 /* USB recovery attempt counter */                     
@@ -458,6 +461,8 @@ static void gpu_irq_handler ( void )
 *******************************************************************************/
 void update_box_data(vg_lite_buffer_t *render_target, prediction_od_t *prediction)
 {
+    bool has_prediction = false;
+    ipc_payload_t* payload = cm55_ipc_get_payload_ptr();
     for (int32_t i = 0; i < prediction->count; i++) {
         int32_t jj = i << 2;
         int32_t id = prediction->class_id[i];
@@ -483,10 +488,16 @@ void update_box_data(vg_lite_buffer_t *render_target, prediction_od_t *predictio
 
         // Draw label with class name and confidence score for valid class IDs
         if (id >= 0 && cid < 4) {
+            has_prediction = true;
             ifx_set_bg_color((color_r[cid] << 16) | (color_g[cid] << 8) | color_b[cid]);
             ifx_print_to_buffer(xmin + 8, ymin - 36, "%s, %.2f", prediction->class_string[i], prediction->conf[i] * 100.0f);
             printf("------------------------------------------------\r\n");
             printf("%s \r\n", prediction->class_string[i]);
+
+            payload->label_id = i;
+            strcpy(payload->label, prediction->class_string[i]);            
+            cm55_ipc_send_to_cm33();
+
 #ifdef RPS_DEMO_MODE_ENABLED
             if (id == 0)
             {
@@ -508,10 +519,16 @@ void update_box_data(vg_lite_buffer_t *render_target, prediction_od_t *predictio
             }
 #endif
 
-        }
+        }       
 
         // Render the buffer
         ifx_draw_buffer(render_target->memory);
+    }
+
+    if (!has_prediction) {
+        payload->label_id = 0;
+        strcpy(payload->label, IPC_UNLABELLED);
+        cm55_ipc_send_to_cm33();
     }
 }
 

@@ -84,6 +84,10 @@
 /* Combined Interrupt Mask */
 #define CY_IPC_CYPIPE_INTR_MASK         ( CY_IPC_CYPIPE_CHAN_MASK_EP1 | CY_IPC_CYPIPE_CHAN_MASK_EP2)
 
+
+/* IPC Payload label for unlabelled data - word chosen for consistency with other Imagimob projects */
+#define IPC_UNLABELLED "unlabelled"
+
 /*******************************************************************************
 * Enumeration
 *******************************************************************************/
