@@ -494,7 +494,7 @@ void update_box_data(vg_lite_buffer_t *render_target, prediction_od_t *predictio
             printf("------------------------------------------------\r\n");
             printf("%s \r\n", prediction->class_string[i]);
 
-            payload->label_id = i;
+            payload->label_id = id;
             strcpy(payload->label, prediction->class_string[i]);            
             cm55_ipc_send_to_cm33();
 
