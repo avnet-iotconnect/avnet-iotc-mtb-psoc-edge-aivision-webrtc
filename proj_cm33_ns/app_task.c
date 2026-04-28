@@ -22,6 +22,7 @@
 #include "app_eeprom_data.h"
 
 #include "app_config.h"
+#include "app_shmem_video.h"
 
 
 /////////////////////////////////////////////////////////////////////////////
@@ -231,6 +232,11 @@ void app_task(void *pvParameters) {
         taskYIELD(); // wait for CM55
     }
     printf("\nApp Task: CM55 IPC is ready. Resuming the application...\n");
+
+    /* Kick off the cross-core video NAL consumer.  Stub for now: it
+     * just polls the ring and prints what it sees.  Future WebRTC
+     * media task replaces this. */
+    app_shmem_video_start();
 
     char iotc_duid[IOTCL_CONFIG_DUID_MAX_LEN] = IOTCONNECT_DUID;
     if (0 == strlen(iotc_duid)) {

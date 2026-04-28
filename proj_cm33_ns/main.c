@@ -49,6 +49,7 @@
 #include "cy_time.h"
 #include "cycfg_peripherals.h"
 #include "ipc_communication.h"
+#include "app_shmem_video.h"
 
 /******************************************************************************
  * Macros
@@ -232,6 +233,11 @@ int main(void)
     if( pdPASS != result ) {
 		handle_app_error();
 	}
+
+    /* Create the shared-memory video consumer task in idle state.  It
+     * will park itself until app_shmem_video_start() is called from the
+     * application (currently invoked from app_task once CM55 IPC is up). */
+    app_shmem_video_init();
 
     if( pdPASS == result )
     {
