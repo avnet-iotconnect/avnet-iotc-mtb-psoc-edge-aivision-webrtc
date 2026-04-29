@@ -12,20 +12,26 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdio.h>
 
 #include "cybsp.h"
 #include "core_cm33.h"
 
 #include "video_ring.h"
 
-#define VIDEO_RING_BASE_ADDR    (CYMEM_CM33_0_m33_m55_shared_START)
+#define VIDEO_RING_BASE_ADDR (CYMEM_CM33_0_m33_m55_shared_START)
 
-static volatile video_ring_header_t * const ring_header = (volatile video_ring_header_t *)VIDEO_RING_BASE_ADDR;
-static volatile video_ring_slot_t * const ring_slots = (volatile video_ring_slot_t *)(VIDEO_RING_BASE_ADDR + sizeof(video_ring_header_t));
+static volatile video_ring_header_t * const ring_header =
+    (volatile video_ring_header_t *)VIDEO_RING_BASE_ADDR;
+
+static volatile video_ring_slot_t * const ring_slots =
+    (volatile video_ring_slot_t *)(VIDEO_RING_BASE_ADDR + sizeof(video_ring_header_t));
 
 /* Consumer-private state.  Lives in CM33 SRAM, not the shared region. */
 static uint32_t consumer_idx = 0;
-static bool     peek_outstanding = false;
+static bool peek_outstanding = false;
+static bool have_last_seq = false;
+static uint32_t last_seq = 0;
 
 void video_ring_consumer_session_start(void) {
     /* Wipe any leftover frames from a prior session before re-enabling.
@@ -35,8 +41,10 @@ void video_ring_consumer_session_start(void) {
     for (uint32_t i = 0; i < VIDEO_RING_SLOTS; i++) {
         ring_slots[i].available = 0U;
     }
-    consumer_idx     = 0;
+    consumer_idx = 0;
     peek_outstanding = false;
+    have_last_seq = false;
+    last_seq = 0;
 
     __DMB();
     ring_header->enabled = 1U;
@@ -46,6 +54,7 @@ void video_ring_consumer_session_start(void) {
 void video_ring_consumer_session_stop(void) {
     ring_header->enabled = 0U;
     __DMB();
+    have_last_seq = false;
 }
 
 bool video_ring_consumer_try_peek(video_ring_slot_view_t *out) {
@@ -55,6 +64,7 @@ bool video_ring_consumer_try_peek(video_ring_slot_view_t *out) {
     if (peek_outstanding) {
         /* Caller forgot to release the previous peek.  Safer to refuse
          * than hand them the same slot twice. */
+        printf("[video_ring] WARN: try_peek without release; refusing.\n");
         return false;
     }
 
@@ -70,6 +80,20 @@ bool video_ring_consumer_try_peek(video_ring_slot_view_t *out) {
     out->is_idr = (slot->is_idr != 0U);
     out->seq = slot->seq;
 
+    /* Underrun detection: CM55's seq increments by 1 per encoded frame.
+     * A gap means CM55 dropped frames because we held the slot too long
+     * (dropped_busy on the producer side) -- the only case where the
+     * stream we see misses sequence numbers.  Warn so it's visible in
+     * logs without needing producer stats from CM55. */
+    if (have_last_seq && out->seq != last_seq + 1) {
+        uint32_t gap = out->seq - last_seq - 1;
+        printf("[video_ring] WARN: underrun, %u frame(s) dropped between seq=%u and seq=%u\n",
+            (unsigned)gap, (unsigned)last_seq, (unsigned)out->seq
+        );
+    }
+    last_seq = out->seq;
+    have_last_seq = true;
+
     peek_outstanding = true;
     return true;
 }
@@ -84,6 +108,6 @@ void video_ring_consumer_release(void) {
     slot->available = 0U;
     __DMB();
 
-    consumer_idx     = 1U - consumer_idx;
+    consumer_idx = 1U - consumer_idx;
     peek_outstanding = false;
 }
