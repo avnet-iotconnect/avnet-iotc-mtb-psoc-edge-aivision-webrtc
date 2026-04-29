@@ -84,13 +84,8 @@ void app_shmem_video_init(void) {
     if (shmem_video_task_handle != NULL) {
         return;
     }
-    BaseType_t ok = xTaskCreate(
-        shmem_video_task,
-        APP_SHMEM_VIDEO_TASK_NAME,
-        APP_SHMEM_VIDEO_TASK_STACK,
-        NULL,
-        APP_SHMEM_VIDEO_TASK_PRIORITY,
-        &shmem_video_task_handle
+    BaseType_t ok = xTaskCreate(shmem_video_task, APP_SHMEM_VIDEO_TASK_NAME, APP_SHMEM_VIDEO_TASK_STACK,
+        NULL, APP_SHMEM_VIDEO_TASK_PRIORITY, &shmem_video_task_handle
     );
     if (pdPASS != ok) {
         printf("[shmemv] failed to create task\n");
