@@ -65,7 +65,7 @@ static void shmem_video_task(void *arg) {
             idr_total++;
         }
 
-        printf("[shmemv] seq=%u len=%u is_idr=%d pts_ms=%u\n", (unsigned)view.seq, (unsigned)view.length, (int)view.is_idr, (unsigned)view.pts_ms);
+        // printf("[shmemv] seq=%u len=%u is_idr=%d pts_ms=%u\n", (unsigned)view.seq, (unsigned)view.length, (int)view.is_idr, (unsigned)view.pts_ms);
 
         video_ring_consumer_release();
 

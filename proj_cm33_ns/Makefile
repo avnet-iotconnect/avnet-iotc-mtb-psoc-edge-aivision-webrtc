@@ -71,6 +71,11 @@ SOURCES+=$(wildcard ../shared/source/COMPONENT_CM33/*.c)
 # directories (without a leading -I).
 INCLUDES+=../shared/include
 
+# WebRTC / KVS third-party libraries (vendored as submodules under
+# ../third_party/). All SOURCES/INCLUDES/CY_IGNORE entries for the vendored
+# libs live in kvs_libs.mk so this file is portable to other Infineon demos.
+include kvs_libs.mk
+
 # Custom configuration of mbedtls library.
 MBEDTLSFLAGS=MBEDTLS_USER_CONFIG_FILE='"mbedtls_user_config.h"'
 

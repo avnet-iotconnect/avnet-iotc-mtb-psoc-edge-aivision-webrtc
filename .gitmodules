@@ -1,3 +1,27 @@
 [submodule "lib/minih264"]
 	path = proj_cm55/third_party/minih264
 	url = https://github.com/lieff/minih264.git
+[submodule "third_party/amazon-kinesis-video-streams-stun"]
+	path = third_party/amazon-kinesis-video-streams-stun
+	url = https://github.com/awslabs/amazon-kinesis-video-streams-stun.git
+[submodule "third_party/amazon-kinesis-video-streams-ice"]
+	path = third_party/amazon-kinesis-video-streams-ice
+	url = https://github.com/awslabs/amazon-kinesis-video-streams-ice.git
+[submodule "third_party/amazon-kinesis-video-streams-rtp"]
+	path = third_party/amazon-kinesis-video-streams-rtp
+	url = https://github.com/awslabs/amazon-kinesis-video-streams-rtp.git
+[submodule "third_party/amazon-kinesis-video-streams-rtcp"]
+	path = third_party/amazon-kinesis-video-streams-rtcp
+	url = https://github.com/awslabs/amazon-kinesis-video-streams-rtcp.git
+[submodule "third_party/amazon-kinesis-video-streams-sdp"]
+	path = third_party/amazon-kinesis-video-streams-sdp
+	url = https://github.com/awslabs/amazon-kinesis-video-streams-sdp.git
+[submodule "third_party/amazon-kinesis-video-streams-signaling"]
+	path = third_party/amazon-kinesis-video-streams-signaling
+	url = https://github.com/awslabs/amazon-kinesis-video-streams-signaling.git
+[submodule "third_party/libsrtp"]
+	path = third_party/libsrtp
+	url = https://github.com/cisco/libsrtp.git
+[submodule "third_party/wslay"]
+	path = third_party/wslay
+	url = https://github.com/tatsuhiro-t/wslay.git
