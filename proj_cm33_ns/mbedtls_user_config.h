@@ -338,7 +338,19 @@
  *
  * Comment this macro to disable support for DTLS
  */
-#undef MBEDTLS_SSL_PROTO_DTLS
+#define MBEDTLS_SSL_PROTO_DTLS
+
+/* DTLS-SRTP support (RFC 5764) for WebRTC media encryption.
+ * Enables MBEDTLS_TLS_SRTP_AES128_CM_HMAC_SHA1_80/_32 protection profiles
+ * and the mbedtls_ssl_conf_dtls_srtp_protection_profiles() API. */
+#define MBEDTLS_SSL_DTLS_SRTP
+
+/* DTLS HelloVerifyRequest cookie support — required for the DTLS handshake
+ * when we act as the DTLS server (typical when we accept a WebRTC offer). */
+#define MBEDTLS_SSL_COOKIE_C
+
+/* DTLS replay-window protection. Recommended whenever DTLS is on. */
+#define MBEDTLS_SSL_DTLS_ANTI_REPLAY
 
 /**
  * \def MBEDTLS_SSL_DTLS_CONNECTION_ID_COMPAT
@@ -453,8 +465,12 @@
  * This is required for certain users of TLS, e.g. EAP-TLS.
  *
  * Comment this macro to disable support for key export
+ *
+ * Required for DTLS-SRTP: SRTP master keys are derived from DTLS handshake
+ * keying material via RFC 5705 (mbedtls_ssl_tls_prf with the
+ * "EXTRACTOR-dtls_srtp" label). Without this flag, libsrtp can't be keyed.
  */
-#undef MBEDTLS_SSL_EXPORT_KEYS
+#define MBEDTLS_SSL_EXPORT_KEYS
 
 
 /**
@@ -998,17 +1014,12 @@
  * other curve is enabled, need to disable the MBEDTLS_ECP_ALT.
  */
 
-/**
- * Nik: Looking at the comments, it would appear that SECP256R1 should be hardware accelerated,
- * but when we try to hook into it, the board freezes when printing the mbedtls generated certificates
- * we must disable it for now and research further.
 #ifdef MBEDTLS_ECP_DP_SECP256R1_ENABLED
 #undef MBEDTLS_ECP_ALT
 #undef MBEDTLS_ECDH_GEN_PUBLIC_ALT
 #undef MBEDTLS_ECDSA_SIGN_ALT
 #undef MBEDTLS_ECDSA_VERIFY_ALT
 #endif
- */
 
 #ifdef MBEDTLS_ECP_DP_SECP192K1_ENABLED
 #undef MBEDTLS_ECP_ALT
