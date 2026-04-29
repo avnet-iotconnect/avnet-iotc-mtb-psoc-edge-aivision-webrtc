@@ -28,6 +28,7 @@ static void run_task(void *arg) {
   - functions/variables/files: `snake_case`
   - type names (`typedef struct`, enums, fn-pointer typedefs): `CamelCase`
   - macros/constants: `UPPER_SNAKE_CASE`
+- Exception Allowed: For type names `snake_case` or `snake_case_t` is allowed if vendor code prefers it, but the exception should be avoided when code (or code pattern) is intended to be shared across different vendor platforms (an SDK or common lib)  
 - Prefer early returns for guard/error paths; use one `goto cleanup` block when resource unwinding is needed.
 - goto is acceptable for error handling common cleanup.
 - Keep one statement per line.
