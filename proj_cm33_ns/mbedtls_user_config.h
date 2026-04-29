@@ -1008,6 +1008,14 @@
 #ifndef DISABLE_MBEDTLS_ACCELERATION
 #include "mbedtls_alt_config.h"
 
+
+// Nik: Rough min values based on testing with MQTT. May change for mTLS + HTTP
+#undef MBEDTLS_SSL_IN_CONTENT_LEN
+#define MBEDTLS_SSL_IN_CONTENT_LEN (6 * 1024)
+
+#undef MBEDTLS_SSL_OUT_CONTENT_LEN
+#define MBEDTLS_SSL_OUT_CONTENT_LEN (2 * 1024)
+
 /**
  * The cy-mbedtls-acceleration module supports only DP_SECP192R1,
  * SECP224R1, SECP256R1, SECP384R1 and SECP521R1 curves. If any
