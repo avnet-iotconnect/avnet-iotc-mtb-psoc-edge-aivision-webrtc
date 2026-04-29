@@ -69,11 +69,13 @@ void video_ring_init(void);
  * frame was published, false if it was dropped (either because the
  * session is disabled or the next slot is still occupied).  When this
  * returns false the caller's encoded bytes are discarded. */
-bool video_ring_try_publish(const uint8_t *coded_data,
-                            uint32_t       coded_size,
-                            uint32_t       pts_ms,
-                            bool           is_idr,
-                            uint32_t       seq);
+bool video_ring_try_publish(
+    const uint8_t *coded_data,
+    uint32_t       coded_size,
+    uint32_t       pts_ms,
+    bool           is_idr,
+    uint32_t       seq
+);
 
 /* Diagnostics -- read-only view of header for logging. */
 const video_ring_header_t *video_ring_header(void);

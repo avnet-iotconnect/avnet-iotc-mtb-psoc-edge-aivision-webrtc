@@ -7,6 +7,8 @@
  */
 
 #include <string.h>
+#include <stdint.h>
+#include <stdbool.h>
 
 #include "cybsp.h"
 #include "core_cm55.h"
@@ -20,11 +22,9 @@
  *   total            ~ 64 KB, well within 256 KB. */
 #define VIDEO_RING_BASE_ADDR    (CYMEM_CM55_0_m33_m55_shared_START)
 
-static volatile video_ring_header_t * const ring_header =
-    (volatile video_ring_header_t *)VIDEO_RING_BASE_ADDR;
+static volatile video_ring_header_t * const ring_header = (volatile video_ring_header_t *)VIDEO_RING_BASE_ADDR;
 
-static video_ring_slot_t * const ring_slots =
-    (video_ring_slot_t *)(VIDEO_RING_BASE_ADDR + sizeof(video_ring_header_t));
+static video_ring_slot_t * const ring_slots = (video_ring_slot_t *)(VIDEO_RING_BASE_ADDR + sizeof(video_ring_header_t));
 
 /* Producer-private state.  Lives in CM55 SRAM, not the shared region. */
 static uint32_t producer_idx = 0;
@@ -38,8 +38,8 @@ static inline void clean_range(const void *addr, size_t bytes)
 
 void video_ring_init(void)
 {
-    ring_header->magic       = 0;
-    ring_header->enabled     = 0;
+    ring_header->magic = 0;
+    ring_header->enabled = 0;
     for (size_t i = 0; i < sizeof(ring_header->reserved) / sizeof(ring_header->reserved[0]); i++) {
         ring_header->reserved[i] = 0;
     }
@@ -106,7 +106,7 @@ bool video_ring_try_publish(
     slot->length = coded_size;
     slot->pts_ms = pts_ms;
     slot->is_idr = is_idr ? 1U : 0U;
-    slot->seq    = seq;
+    slot->seq = seq;
 
     /* 5. Order the metadata writes ahead of the available flip, then
      *    flush the slot to memory so CM33 can see it. */
