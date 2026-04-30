@@ -24,7 +24,6 @@
 #include "app_config.h"
 #include "app_shmem_video.h"
 
-
 /////////////////////////////////////////////////////////////////////////////
 
 #define APP_VERSION_BASE "2.0.0"
@@ -308,7 +307,11 @@ void app_task(void *pvParameters) {
     printf("CPID: %s\n", config.cpid);
     printf("ENV: %s\n", config.env);
     printf("WiFi SSID: %s\n", app_eeprom_data_get_wifi_ssid(WIFI_SSID));
-    printf("Device certificate:\n%s\n", app_eeprom_data_get_certificate(IOTCONNECT_DEVICE_CERT));
+    if (strlen(IOTCONNECT_DEVICE_CERT) > 0) {
+        printf("Device certificate is set in app_config.h\n");
+    } else if (strlen(app_eeprom_data_get_certificate(IOTCONNECT_DEVICE_CERT)) > 0) {
+        printf("Device certificate is stored in EEPROM\n");
+    }
 
     // This will not return if it fails
     wifi_app_connect(

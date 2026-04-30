@@ -17,9 +17,11 @@
 #include "video_ring.h"
 #include "app_shmem_video.h"
 
+#include "webrtc_smoke_test.h" // TEMP SMOKE TEST. TODO: remove this and the test files after testing.
+
 
 #define APP_SHMEM_VIDEO_TASK_NAME       ("CM33 Shmem Video")
-#define APP_SHMEM_VIDEO_TASK_STACK      (2U * 1024U)
+#define APP_SHMEM_VIDEO_TASK_STACK      (10U * 1024U)
 #define APP_SHMEM_VIDEO_TASK_PRIORITY   (tskIDLE_PRIORITY + 2U)
 
 /* Polling cadence.  PILOT.md §5.4 calls for 20 ms; encoder runs at
@@ -42,6 +44,8 @@ static void shmem_video_task(void *arg) {
     uint32_t idr_total = 0;
     uint32_t window_frames = 0;
     uint32_t window_bytes = 0;
+
+    webrtc_smoke_test_run(); // TEMP SMOKE TEST. TODO: remove this and the test files after testing.
 
     for (;;) {
         if (!shmem_video_running) {

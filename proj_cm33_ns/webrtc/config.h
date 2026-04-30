@@ -104,8 +104,19 @@
  * to other code (other vendored libs don't include this header, and our
  * own webrtc glue won't `#include "config.h"` -- it'll just call malloc).
  */
+#include <string.h>
 #include "FreeRTOS.h"
-#define malloc(sz)   pvPortMalloc(sz)
-#define free(p)      vPortFree(p)
+#define malloc(sz)      pvPortMalloc(sz)
+#define free(p)         vPortFree(p)
+/* calloc is used by srtp_crypto_alloc(); keep all srtp allocations on the
+ * FreeRTOS heap alongside malloc/free above.  pvPortMalloc already zeroes
+ * in some heap implementations, but memset is safe either way. */
+static inline void *_srtp_calloc(size_t n, size_t sz)
+{
+    void *p = pvPortMalloc(n * sz);
+    if (p) { memset(p, 0, n * sz); }
+    return p;
+}
+#define calloc(n, sz)   _srtp_calloc(n, sz)
 
 #endif /* PROJ_CM33_NS_WEBRTC_CONFIG_H */
