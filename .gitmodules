@@ -25,3 +25,7 @@
 [submodule "third_party/wslay"]
 	path = third_party/wslay
 	url = https://github.com/tatsuhiro-t/wslay.git
+[submodule "third_party/SigV4-for-AWS-IoT-embedded-sdk"]
+	path = third_party/SigV4-for-AWS-IoT-embedded-sdk
+	url = https://github.com/aws/SigV4-for-AWS-IoT-embedded-sdk.git
+	branch = main

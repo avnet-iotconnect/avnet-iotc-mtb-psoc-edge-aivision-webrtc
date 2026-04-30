@@ -19,15 +19,13 @@
 
 THIRD_PARTY_DIR := ../third_party
 
-# Take the in-library defaults for the SDP component (skips the
-# `#include "sdp_config.h"` user-config indirection). Mirrors the existing
-# HTTP_DO_NOT_USE_CUSTOM_CONFIG / MQTT_DO_NOT_USE_CUSTOM_CONFIG idiom in this
-# Makefile. The other KVS components (stun/ice/rtp/rtcp/signaling) don't ship
-# a *_config_defaults.h indirection, so no flag is needed for them.
-# This matches what the N6 reference project does (.cproject sets only
-# SDP_DO_NOT_USE_CUSTOM_CONFIG; no custom config headers are written for the
-# other KVS components -- defaults are taken).
+# Take the in-library defaults for components that ship a
+# `*_config_defaults.h` user-config indirection (SDP and SigV4). Mirrors the
+# existing HTTP_DO_NOT_USE_CUSTOM_CONFIG / MQTT_DO_NOT_USE_CUSTOM_CONFIG idiom
+# in this Makefile. The other KVS components (stun/ice/rtp/rtcp/signaling)
+# don't ship that indirection, so no flag is needed for them.
 DEFINES+=SDP_DO_NOT_USE_CUSTOM_CONFIG
+DEFINES+=SIGV4_DO_NOT_USE_CUSTOM_CONFIG
 
 # coreJSON (used by amazon-kinesis-video-streams-signaling for SDP/ICE message
 # parsing). Already present in mtb_shared via aws-iot-device-sdk-embedded-C,
@@ -105,6 +103,21 @@ CY_IGNORE+=$(THIRD_PARTY_DIR)/amazon-kinesis-video-streams-signaling/source/depe
 CY_IGNORE+=$(THIRD_PARTY_DIR)/amazon-kinesis-video-streams-signaling/test
 CY_IGNORE+=$(THIRD_PARTY_DIR)/amazon-kinesis-video-streams-signaling/CMakeLists.txt
 CY_IGNORE+=$(THIRD_PARTY_DIR)/amazon-kinesis-video-streams-signaling/signalingFilePaths.cmake
+
+# -----------------------------------------------------------------------------
+# SigV4-for-AWS-IoT-embedded-sdk (v1.3.1)
+# Used by signaling.c to sign the ConnectAsViewer WSS URL with the 1-hour AWS
+# creds triplet (AKID, secret, session token).  Defaults config taken via
+# SIGV4_DO_NOT_USE_CUSTOM_CONFIG (set above).
+# -----------------------------------------------------------------------------
+SIGV4_DIR := $(THIRD_PARTY_DIR)/SigV4-for-AWS-IoT-embedded-sdk
+SOURCES+=$(wildcard $(SIGV4_DIR)/source/*.c)
+INCLUDES+=$(SIGV4_DIR)/source/include
+CY_IGNORE+=$(SIGV4_DIR)/test
+CY_IGNORE+=$(SIGV4_DIR)/tools
+CY_IGNORE+=$(SIGV4_DIR)/docs
+CY_IGNORE+=$(SIGV4_DIR)/CMakeLists.txt
+CY_IGNORE+=$(SIGV4_DIR)/sigv4FilePaths.cmake
 
 # -----------------------------------------------------------------------------
 # wslay (WebSocket frame codec used by KVS WSS signaling)
