@@ -14,7 +14,6 @@
  *  3. H264    -- packetize a single synthetic NAL unit, get one RTP packet
  *  4. SDP     -- build a minimal SDP session description
  *  5. libsrtp -- srtp_init() (one-time library init)
- *  6. coreJSON-- JSON_Validate() on a trivial document
  */
 
 #include <string.h>
@@ -38,9 +37,6 @@
 
 /* libsrtp */
 #include "srtp.h"
-
-/* coreJSON */
-#include "core_json.h"
 
 #include "webrtc_smoke_test.h"
 
@@ -319,31 +315,6 @@ static int test_srtp(void) {
 }
 
 /* -------------------------------------------------------------------------- */
-/* 6. coreJSON: validate a trivial document                                   */
-/* -------------------------------------------------------------------------- */
-
-static int test_core_json(void) {
-    /* JSON_SearchT takes non-const char* (it modifies nothing but lacks const). */
-    char json[] = "{\"action\":\"SDP_OFFER\",\"messagePayload\":\"test\"}";
-    JSONStatus_t rc = JSON_Validate(json, sizeof(json) - 1);
-    if (rc != JSONSuccess) {
-        TEST_FAIL("coreJSON", "JSON_Validate returned %d", (int)rc);
-        return 1;
-    }
-
-    /* Also exercise JSON_Search — needed by amazon-kinesis-video-streams-signaling. */
-    char *val = NULL;
-    size_t val_len = 0;
-    rc = JSON_Search(json, sizeof(json) - 1, "action", 6, &val, &val_len);
-    if (rc != JSONSuccess || val == NULL) {
-        TEST_FAIL("coreJSON/search", "JSON_Search returned %d", (int)rc);
-        return 1;
-    }
-    TEST_PASS("coreJSON  (validate + search, val=%.*s)", (int)val_len, val);
-    return 0;
-}
-
-/* -------------------------------------------------------------------------- */
 /* Entry point                                                                 */
 /* -------------------------------------------------------------------------- */
 
@@ -359,7 +330,7 @@ int webrtc_smoke_test_run(void) {
     fails += test_sdp();
     fails += test_srtp();
     if (fails == 0) {
-        printf("[SMOKE] ---- ALL PASSED (%d/6) ----\n", 6);
+        printf("[SMOKE] ---- ALL PASSED (%d/5) ----\n", 5);
     } else {
         printf("[SMOKE] ---- %d FAILED ----\n", fails);
     }
