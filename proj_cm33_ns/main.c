@@ -186,7 +186,7 @@ int main(void)
 {
     cy_rslt_t result;
     rtc_type obj;
-        
+
     /* Initialize the board support package. */
     
     result = cybsp_init();
