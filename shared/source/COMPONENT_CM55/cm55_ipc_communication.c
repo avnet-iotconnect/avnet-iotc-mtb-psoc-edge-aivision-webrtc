@@ -149,7 +149,7 @@ ipc_payload_t* cm55_ipc_get_payload_ptr(void)
 
 void cm55_ipc_send_to_cm33(void)
 {
-    cy_en_ipc_pipe_status_t pipe_status;
+    volatile cy_en_ipc_pipe_status_t pipe_status;
 
     cm55_msg_data.client_id = CM33_IPC_PIPE_CLIENT_ID;
     cm55_msg_data.intr_mask = CY_IPC_CYPIPE_INTR_MASK_EP2;
@@ -157,7 +157,9 @@ void cm55_ipc_send_to_cm33(void)
     pipe_status = Cy_IPC_Pipe_SendMessage(CM33_IPC_PIPE_EP_ADDR,
                              CM55_IPC_PIPE_EP_ADDR,
                              (void *) &cm55_msg_data, 0);
-    if (CY_IPC_PIPE_SUCCESS != pipe_status) {
+    if (CY_IPC_PIPE_SUCCESS != pipe_status && CY_IPC_PIPE_ERROR_SEND_BUSY != pipe_status) {
+        // CY_IPC_PIPE_ERROR_SEND_BUSY is expected if CM33 hasn't processed the previous message yet.
+        // This OFTEN happens when we are debugging. It's more of a hinderance than actual useful error handling.
         handle_app_error();
     }
 }
