@@ -11,10 +11,10 @@
 #   INCLUDES+= -- public header dirs
 #   CY_IGNORE+=-- non-portable bits (CMake, host-only tests, nested .git, etc.)
 #
-# Layout reference (see work/reference/n6-analysis.md §15.2, §16.1, PLAN.md §1):
+# Layout reference (see work/reference/n6-analysis.md §15.2, §16.1, PILOT.md §3):
 #   third_party/amazon-kinesis-video-streams-{stun,ice,rtp,rtcp,sdp,signaling}
-#   third_party/libsrtp        -- not yet wired (see TODO at bottom)
-#   third_party/wslay          -- not yet wired (see TODO at bottom)
+#   third_party/wslay
+#   third_party/libsrtp
 ################################################################################
 
 THIRD_PARTY_DIR := ../third_party
@@ -140,26 +140,88 @@ CY_IGNORE+=$(WSLAY_DIR)/Makefile.am
 CY_IGNORE+=$(WSLAY_DIR)/lib/Makefile.am
 
 # -----------------------------------------------------------------------------
-# TODO (next turn): libsrtp
-# -----------------------------------------------------------------------------
-# third_party/libsrtp (pinned v2.8.0) is checked out but NOT wired into the
-# build yet.  Decision (PILOT.md / PLAN.md): use libsrtp's internal AES
-# backend, no mbedTLS-crypto shim.  Owner accepted the SW-AES perf hit (CM33
-# has plenty of headroom for line-rate SRTP at our framerate).  If perf turns
-# tight later we can revisit and add an mbedTLS cipher adapter or call the
-# Cypress crypto block directly.
+# libsrtp (v2.8.0) -- SRTP/SRTCP encryption for media path
+# Backend: libsrtp's internal AES (OPENSSL/MBEDTLS/NSS/WOLFSSL all undefined,
+# see webrtc/config.h).  CM33 has CPU headroom for SW-AES at our framerate.
+# Profile used: SRTP_AES128_CM_HMAC_SHA1_80 -> AES-GCM (GCM macro) not needed.
 #
-# Wiring sketch:
-#   - Hand-authored libsrtp_config.h with: PACKAGE_STRING, HAVE_STDLIB_H,
-#     HAVE_STRING_H, HAVE_INTTYPES_H, HAVE_STDINT_H, HAVE_NETINET_IN_H
-#     (via lwIP POSIX compat), CPU_RISC, OPENSSL undefined, MBEDTLS undefined,
-#     NSS undefined, WOLFSSL undefined.  Place under proj_cm33_ns/configs/.
-#   - SOURCES globs: libsrtp/srtp/*.c, libsrtp/crypto/cipher/{cipher.c,
-#     cipher_test_cases.c,aes.c,aes_icm.c,null_cipher.c}, libsrtp/crypto/hash/
-#     {auth.c,auth_test_cases.c,hmac.c,sha1.c,null_auth.c},
-#     libsrtp/crypto/kernel/*.c, libsrtp/crypto/math/datatypes.c,
-#     libsrtp/crypto/replay/*.c.
-#     Skip OpenSSL/NSS/WolfSSL/MbedTLS variants under crypto/cipher/ and
-#     crypto/hash/.
-#   - INCLUDES: libsrtp/include, libsrtp/crypto/include.
-#   - DEFINES: HAVE_CONFIG_H (so libsrtp picks up our config.h).
+# config.h: shared `webrtc/config.h` is project-owned; HAVE_CONFIG_H is defined
+# project-wide.  Other vendored libs (wslay, KVS protocol libs) either guard
+# their `#include <config.h>` with `#ifdef HAVE_CONFIG_H` and don't read any
+# macro that would collide, or bypass HAVE_CONFIG_H entirely (wslay).
+#
+# CY_IGNORE strategy: blanket-ignore the whole tree, then re-add only the
+# files we actually want via SOURCES+= (cleaner than enumerating every
+# unwanted dir like fuzzer/, test/, timing/, doc/, cmake/, etc.).  This is
+# different from the awslabs KVS libs above where `source/` is the only
+# *.c-bearing dir; libsrtp scatters .c files across srtp/, crypto/cipher/,
+# crypto/hash/, crypto/kernel/, crypto/math/, crypto/replay/.
+# -----------------------------------------------------------------------------
+LIBSRTP_DIR := $(THIRD_PARTY_DIR)/libsrtp
+
+# Tell libsrtp to consume our config header.
+# `./webrtc` puts webrtc/config.h on the include path AND supplies our
+# webrtc/netinet/in.h shim (lwIP doesn't ship that POSIX header even though
+# it ships <arpa/inet.h>; libsrtp's datatypes.h needs it for htonX/ntohX).
+DEFINES+=HAVE_CONFIG_H
+INCLUDES+=./webrtc
+
+# Demote `incompatible-pointer-types` from error to warning. libsrtp's srtp.c
+# passes `(unsigned int *)` where the cipher API takes `uint32_t *`. Both are
+# 32-bit on Cortex-M but the types differ (newlib defines uint32_t as
+# `unsigned long`), and modern GCC errors on this by default. Same flag the
+# N6 reference port uses (.cproject; see PILOT.md / kvs_libs.mk history).
+# Scope is whole-build, but the warning is benign for non-libsrtp code.
+CFLAGS+=-Wno-error=incompatible-pointer-types
+
+# srtp.c -- the only .c under srtp/.
+SOURCES+=$(LIBSRTP_DIR)/srtp/srtp.c
+
+# crypto/cipher/: pick the internal-AES + null variants; skip backend shims
+# (OpenSSL/NSS/MbedTLS) and AES-GCM (we don't negotiate GCM).
+SOURCES+=$(LIBSRTP_DIR)/crypto/cipher/cipher.c
+SOURCES+=$(LIBSRTP_DIR)/crypto/cipher/cipher_test_cases.c
+SOURCES+=$(LIBSRTP_DIR)/crypto/cipher/aes.c
+SOURCES+=$(LIBSRTP_DIR)/crypto/cipher/aes_icm.c
+SOURCES+=$(LIBSRTP_DIR)/crypto/cipher/null_cipher.c
+
+# crypto/hash/: HMAC-SHA1 (internal) + null; skip OpenSSL/NSS/MbedTLS shims.
+SOURCES+=$(LIBSRTP_DIR)/crypto/hash/auth.c
+SOURCES+=$(LIBSRTP_DIR)/crypto/hash/auth_test_cases.c
+SOURCES+=$(LIBSRTP_DIR)/crypto/hash/hmac.c
+SOURCES+=$(LIBSRTP_DIR)/crypto/hash/sha1.c
+SOURCES+=$(LIBSRTP_DIR)/crypto/hash/null_auth.c
+
+# crypto/kernel/, crypto/math/, crypto/replay/: take everything.
+SOURCES+=$(wildcard $(LIBSRTP_DIR)/crypto/kernel/*.c)
+SOURCES+=$(LIBSRTP_DIR)/crypto/math/datatypes.c
+SOURCES+=$(wildcard $(LIBSRTP_DIR)/crypto/replay/*.c)
+
+# Public + crypto-internal headers.
+INCLUDES+=$(LIBSRTP_DIR)/include
+INCLUDES+=$(LIBSRTP_DIR)/crypto/include
+
+# Ignore everything that isn't explicitly listed above (build infrastructure,
+# host-only tests, fuzzers, docs, alternate backends, RFC 7714 GCM dirs, etc.).
+CY_IGNORE+=$(LIBSRTP_DIR)/cmake
+CY_IGNORE+=$(LIBSRTP_DIR)/doc
+CY_IGNORE+=$(LIBSRTP_DIR)/fuzzer
+CY_IGNORE+=$(LIBSRTP_DIR)/test
+CY_IGNORE+=$(LIBSRTP_DIR)/timing
+CY_IGNORE+=$(LIBSRTP_DIR)/CMakeLists.txt
+CY_IGNORE+=$(LIBSRTP_DIR)/Config.cmake.in
+CY_IGNORE+=$(LIBSRTP_DIR)/Makefile.in
+CY_IGNORE+=$(LIBSRTP_DIR)/configure
+CY_IGNORE+=$(LIBSRTP_DIR)/configure.ac
+CY_IGNORE+=$(LIBSRTP_DIR)/meson.build
+CY_IGNORE+=$(LIBSRTP_DIR)/meson_options.txt
+# Backend variants we do not compile.
+CY_IGNORE+=$(LIBSRTP_DIR)/crypto/cipher/aes_gcm_mbedtls.c
+CY_IGNORE+=$(LIBSRTP_DIR)/crypto/cipher/aes_gcm_nss.c
+CY_IGNORE+=$(LIBSRTP_DIR)/crypto/cipher/aes_gcm_ossl.c
+CY_IGNORE+=$(LIBSRTP_DIR)/crypto/cipher/aes_icm_mbedtls.c
+CY_IGNORE+=$(LIBSRTP_DIR)/crypto/cipher/aes_icm_nss.c
+CY_IGNORE+=$(LIBSRTP_DIR)/crypto/cipher/aes_icm_ossl.c
+CY_IGNORE+=$(LIBSRTP_DIR)/crypto/hash/hmac_mbedtls.c
+CY_IGNORE+=$(LIBSRTP_DIR)/crypto/hash/hmac_nss.c
+CY_IGNORE+=$(LIBSRTP_DIR)/crypto/hash/hmac_ossl.c
