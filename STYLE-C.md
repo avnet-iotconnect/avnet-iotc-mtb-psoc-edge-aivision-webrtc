@@ -9,6 +9,13 @@ Scope: Files that we own and/or create.
 
 If rules conflict, follow this file.
 
+When reformatting, respect what you may identify to be a reasonable concious decision to violate a rule vs. a simple mistake, lazyness or AI slop. Readability over consistency. Examples:
+- A repeat `if failed then go to error handler` can go on one line if the same thing repeats often enough to warrant a one-liner.
+- An above example may except the required curly braces.
+- A function declaration is too long but args on the right are the same as another visible one-line function declaration. No need to "see" them in this case. An opposite may be a valid exception as well.
+
+In other words, any conscious exceptions are acceptable, but slop is not. Long are the days when auto-formatting caused commit churn. IDE AI assists now follow your style patterns. But don't push your patterns in code "just beause you like it" - hence this document.
+
 ## Required
 
 - Indent with 4 spaces. No tabs in new/edited lines.
@@ -28,17 +35,21 @@ static void run_task(void *arg) {
   - functions/variables/files: `snake_case`
   - type names (`typedef struct`, enums, fn-pointer typedefs): `CamelCase`
   - macros/constants: `UPPER_SNAKE_CASE`
-- Exception Allowed: For type names `snake_case` or `snake_case_t` is allowed if vendor code prefers it, but the exception should be avoided when code (or code pattern) is intended to be shared across different vendor platforms (an SDK or common lib)  
+- Exception Allowed: For type names `snake_case` or `snake_case_t` is allowed if vendor code prefers it, but the exception should be avoided when code (or code pattern) is intended to be shared across different vendor platforms (an SDK or common libs)  
 - Prefer early returns for guard/error paths; use one `goto cleanup` block when resource unwinding is needed.
 - goto is acceptable for error handling common cleanup.
 - Keep one statement per line.
+- Before deciding to write `(void)` for ignored function return or arg - think. Do you really need compiler complance? do you expect this to sometimes actually fail to warrant your intent to communicate ignored return for production perhaps?
+- Do communicate ignored function args in function definitions with `(void)`.
+- Declare in-function (stack) variables near where they are used, not at the top of the function unless there is a reability gain.
 
 ## Line breaking
 
-Target readable width: up to about 140 columns. Slightly 140 is allowed for "I don't care to see this code often" for example when variable assigned.
+Target readable width: up to about 160 columns. Over 160 is allowed for "I don't care to see this code often" for example ona long cookie-cutter variable assignment or declaration.
 
 - Keep short calls/signatures/conditions on one line.
 - If a line gets long, use this continuation form (not stair-step) when more than a handful of args need to be broken up (case when many args):
+- if/else and similar generally should not omit curly braces. Always, if followed on the next line. An example rare exception may be a repeat "if (fail) goto handler;"
 
 ```c
 result = some_function(
@@ -71,8 +82,8 @@ printf("Result: %d, error: more long text ... %d\n",
 - Do not collapse already-readable multiline calls into a single long line.
 Column width is a readability guideline, not a hard limit.
 - Aim for condensed code (less LOC). Avoid empty lines, but add them to accent logical grouping or decoupling.
-- Aim for <= 140 columns for most code.
-- It is acceptable to exceed 140 when breaking the line would reduce readability or add noisy wrapping.
+- Aim for <= 160 columns for most code.
+- It is acceptable to exceed 160 when breaking the line would reduce readability or add noisy wrapping.
 - The general wrapping rule is "do I really need to see what's far to the right" or will I benefit more from seeing more important LOCs. 
 - Typical exception: long `printf(...)`/logging calls where arguments are straightforward and already easy to scan especially when many other printfs in the file.
 - Wrap lines when structure must be visually parsed (long conditions, nested calls, many non-trivial arguments, or mixed expressions).
@@ -106,7 +117,7 @@ multi-line (usually over 3) so that they can be edted easily. Examples: Code sni
 
 ## Other
 - No vertical alignment padding (types, names, assignments, args). Use single spaces only.
-- Exception to the above: A list of #define constants should be aligned.  
+- Exception to the above: A list of #define constants can be aligned if repeats enough.
 
 ## Legacy/reflow policy
 
