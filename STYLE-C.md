@@ -30,11 +30,11 @@ static void run_task(void *arg) {
   - functions/variables/files: `snake_case`
   - type names (`typedef struct`, enums, fn-pointer typedefs): `CamelCase`
   - macros/constants: `UPPER_SNAKE_CASE`
-- Exception Allowed: For type names `snake_case` or `snake_case_t` is allowed if vendor code prefers it, but the exception should be avoided when code (or code pattern) is intended to be shared across different vendor platforms (an SDK or common libs)  
+- Exception Allowed: For example, for type names `snake_case` or `snake_case_t` is allowed if it really better aligns with vendor code style, but the exception should be avoided when code (or code pattern) is intended to be shared across different vendor platforms (an SDK or common libs).
 - Prefer early returns for guard/error paths; use one `goto cleanup` block when resource unwinding is needed.
 - goto is acceptable for error handling common cleanup.
 - Keep one statement per line.
-- Before deciding to write `(void)` for ignored function return or arg - think. Do you really need compiler complance? do you expect this to sometimes actually fail to warrant your intent to communicate ignored return for production perhaps?
+- Before deciding to write `(void)` for ignored function return - think. Do you really need compiler complance? do you expect this to sometimes actually fail to warrant your intent to communicate ignored return for production perhaps?
 - Do communicate ignored function args in function definitions with `(void)`.
 - Declare in-function (stack) variables near where they are used, not at the top of the function unless there is a reability gain.
 
