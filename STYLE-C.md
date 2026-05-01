@@ -2,12 +2,7 @@
 
 Scope: Files that we own and/or create.
 
-## Precedence
-
-1. This file for formatting/layout decisions.
-2. `CONTRIBUTING.md` for general conventions.
-
-If rules conflict, follow this file.
+## General
 
 When reformatting, respect what you may identify to be a reasonable concious decision to violate a rule vs. a simple mistake, lazyness or AI slop. Readability over consistency. Examples:
 - A repeat `if failed then go to error handler` can go on one line if the same thing repeats often enough to warrant a one-liner.
