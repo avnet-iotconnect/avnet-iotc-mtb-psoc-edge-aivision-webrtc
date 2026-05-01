@@ -75,7 +75,7 @@ printf("Result: %d, error: more long text ... %d\n",
 
 ```
 - Do not collapse already-readable multiline calls into a single long line.
-Column width is a readability guideline, not a hard limit.
+- Column width is a readability guideline, not a hard limit.
 - Aim for condensed code (less LOC). Avoid empty lines, but add them to accent logical grouping or decoupling.
 - Aim for <= 160 columns for most code.
 - It is acceptable to exceed 160 when breaking the line would reduce readability or add noisy wrapping.
