@@ -107,11 +107,10 @@ printf("Result: %d, error: more long text ... %d\n",
 
 - Do not do docstring/javadoc style header comments.
 - Describe the non-obvious contract condition in function declaration header. Especially conditions involving memory ownership or responsibility to free allocated results or globals.
-- Comments, and even short blocks use `//` while `/*` blocks can be used for
-multi-line (usually over 3) so that they can be edited easily. Examples: Code snippets, large descriptions with formatting.
+- Use // for msot comments. Reserve /* */ for formatted blocks (4+ lines: code guides, structured descriptions). Avoid lone * continuation lines.
 - AI should not use numbered steps when describing flow.
 - Comment the why, not the obvious what.
-- Comment complex algorithms in implementation.
+- Comment complex algorithms in implementation. Use comment header blocks to explain the flow and intent.
 - When API call (usually in headers) is complicated provide call examples.
 - Keep comments short and local to non-obvious logic.
 - Never use block comments with standard "parameters" and "returns" unless a library code and probably not even then.
