@@ -96,8 +96,11 @@ Column width is a readability guideline, not a hard limit.
 
 ## Comments
 
+- Comments, and even short blocks use `//` while `/*` blocks can be used for
+multi-line (usually over 3) so that they can be edted easily. Examples: Code snippets, large descriptions with formatting.
+- AI should not use numbered steps when describing flow.
 - Comment the why, not the obvious what.
-- When API is complicated provide call examples.
+- When API call (usually in headers) is complicated provide call examples.
 - Keep comments short and local to non-obvious logic.
 - Never use block comments with standard "parameters" and "returns" unless a library code and probably not even then.
 

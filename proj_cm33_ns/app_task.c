@@ -23,6 +23,7 @@
 
 #include "app_config.h"
 #include "app_shmem_video.h"
+#include "app_webrtc.h"
 
 /////////////////////////////////////////////////////////////////////////////
 
@@ -326,6 +327,10 @@ void app_task(void *pvParameters) {
         printf("Failed to initialize the /IOTCONNECT SDK. Error code: %u\n", (unsigned int) ret);
         goto exit_cleanup;
     }
+
+    /* Spawn the WebRTC task. Non-blocking; the telemetry loop below keeps running.
+     * Pre-reqs are met here: Wi-Fi up, NTP synced, iotconnect_sdk_init succeeded. */
+    app_webrtc_start();
 
     for (int i = 0; i < 10; i++) {
         ret = iotconnect_sdk_connect();
