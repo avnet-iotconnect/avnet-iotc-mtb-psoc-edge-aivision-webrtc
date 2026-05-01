@@ -64,7 +64,7 @@ if (
 }
 ```
 
-- Grouping of related args/statment on the same line is allowed when logically related.
+- Grouping of related args/statment on the same line is allowed when logically related (eg. the printf example below).
 
 - Preferred alternative especially for printf format and when only a few args or grouping improves readability. Not allowed for function parameters:
 
