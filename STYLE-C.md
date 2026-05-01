@@ -4,12 +4,13 @@ Scope: Files that we own and/or create.
 
 ## General
 
-When reformatting, respect what you may identify to be a reasonable concious decision to violate a rule vs. a simple mistake, lazyness or AI slop. Readability over consistency. Examples:
+When reformatting, respect what you may identify to be a reasonable conscious decision to violate a rule vs. a simple mistake, laziness or AI slop. Readability over consistency. Examples:
 - A repeat `if failed then go to error handler` can go on one line if the same thing repeats often enough to warrant a one-liner.
 - An above example may except the required curly braces.
 - A function declaration is too long but args on the right are the same as another visible one-line function declaration. No need to "see" them in this case. An opposite may be a valid exception as well.
 
-In other words, any conscious exceptions are acceptable, but slop is not. Long are the days when auto-formatting caused commit churn. IDE AI assists now follow your style patterns. But don't push your patterns in code "just beause you like it" - hence this document.
+In other words, any conscious exceptions are acceptable, but slop is not. Long are the days when auto-formatting caused commit churn. IDE AI assists now follow your style patterns.
+But don't push your patterns in code "just because you like it" - hence this document.
 
 ## Required
 
@@ -30,13 +31,15 @@ static void run_task(void *arg) {
   - functions/variables/files: `snake_case`
   - type names (`typedef struct`, enums, fn-pointer typedefs): `CamelCase`
   - macros/constants: `UPPER_SNAKE_CASE`
-- Exception Allowed: For example, for type names `snake_case` or `snake_case_t` is allowed if it really better aligns with vendor code style, but the exception should be avoided when code (or code pattern) is intended to be shared across different vendor platforms (an SDK or common libs).
+- Exception Allowed: For example, for type names `snake_case` or `snake_case_t` is allowed if it really better aligns with vendor code style, 
+but the exception should be avoided when code (or code pattern) is intended to be shared across different vendor platforms (an SDK or common libs).
 - Prefer early returns for guard/error paths; use one `goto cleanup` block when resource unwinding is needed.
 - goto is acceptable for error handling common cleanup.
 - Keep one statement per line.
-- Before deciding to write `(void)` for ignored function return - think. Do you really need compiler complance? Do you expect this to sometimes actually fail to warrant your intent to communicate ignored return for production perhaps?
+- Before deciding to write `(void)` for ignored function return - think. Do you really need compiler compliance? 
+Do you expect this to sometimes actually fail to warrant your intent to communicate ignored return for production perhaps?
 - Do communicate ignored function args in function definitions with `(void)`.
-- Declare in-function (stack) variables near where they are used, not at the top of the function unless there is a reability gain.
+- Declare in-function (stack) variables near where they are used, not at the top of the function unless there is a readability gain.
 
 ## Line breaking
 
@@ -96,7 +99,7 @@ printf("Result: %d, error: more long text ... %d\n",
  */
 ```
 
-- Agents should pull author info from git global cofig.
+- Agents should pull author info from git global config.
 
 - When editing vendor files, keep vendor header and append SPDX line if needed.
 
@@ -105,10 +108,10 @@ printf("Result: %d, error: more long text ... %d\n",
 - Do not do docstring/javadoc style header comments.
 - Describe the non-obvious contract condition in function declaration header. Especially conditions involving memory ownership or responsibility to free allocated results or globals.
 - Comments, and even short blocks use `//` while `/*` blocks can be used for
-multi-line (usually over 3) so that they can be edted easily. Examples: Code snippets, large descriptions with formatting.
+multi-line (usually over 3) so that they can be edited easily. Examples: Code snippets, large descriptions with formatting.
 - AI should not use numbered steps when describing flow.
 - Comment the why, not the obvious what.
-- Comment complex algorithms in code.
+- Comment complex algorithms in implementation.
 - When API call (usually in headers) is complicated provide call examples.
 - Keep comments short and local to non-obvious logic.
 - Never use block comments with standard "parameters" and "returns" unless a library code and probably not even then.
