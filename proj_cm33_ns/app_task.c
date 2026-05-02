@@ -27,25 +27,7 @@
 
 /////////////////////////////////////////////////////////////////////////////
 
-#define APP_VERSION_BASE "2.0.0"
-
-// Defined in common.mk then dereference in this Makefile with DEFINES+=
-#if defined(COUGH_MODEL)
-#define APP_VERSION ("C-" APP_VERSION_BASE)
-#elif defined(ALARM_MODEL)
-#define APP_VERSION ("A-" APP_VERSION_BASE)
-#elif defined(BABYCRY_MODEL)
-#define APP_VERSION ("B-" APP_VERSION_BASE)
-#elif defined(DIRECTIONOFARRIVAL_MODEL)
-#define APP_VERSION ("D-" APP_VERSION_BASE)
-#elif defined(FALLDETECTION_MODEL)
-#define APP_VERSION ("F-" APP_VERSION_BASE)
-#elif defined(GESTURE_MODEL)
-#define APP_VERSION ("G-" APP_VERSION_BASE)
-#else
-#define APP_VERSION ("?-" APP_VERSION_BASE)
-#endif
-
+#define APP_VERSION "1.0.0"
 
 typedef enum UserInputYnStatus {
 	APP_INPUT_NONE = 0,
@@ -330,7 +312,21 @@ void app_task(void *pvParameters) {
 
     /* Spawn the WebRTC task. Non-blocking; the telemetry loop below keeps running.
      * Pre-reqs are met here: Wi-Fi up, NTP synced, iotconnect_sdk_init succeeded. */
-    app_webrtc_start();
+    // app_webrtc_start();
+
+    // Smoke-test the AWS creds mTLS flow before connecting MQTT.
+    int creds_status = iotconnect_sdk_obtain_aws_creds();
+    if (creds_status != 0) {
+        printf("AWS creds obtain failed (status=%d).\n", creds_status);
+    } else {
+        const IotclDraCredentialsResult *c = iotconnect_sdk_aws_creds_get();
+        if (c) {
+            printf("AWS creds:\n  AKID: %s\n  Secret: %s\n  Session: %s\n  Expires: %s (in %d s)\n",
+                c->access_key_id, c->secret_access_key, c->session_token,
+                c->expiration_str, iotconnect_sdk_aws_creds_seconds_until_expiry()
+            );
+        }
+    }
 
     for (int i = 0; i < 10; i++) {
         ret = iotconnect_sdk_connect();

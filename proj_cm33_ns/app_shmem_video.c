@@ -74,12 +74,15 @@ static void shmem_video_task(void *arg) {
         video_ring_consumer_release();
 
         if (window_frames >= APP_SHMEM_VIDEO_REPORT_EVERY) {
+#if 0
             printf("[shmemv] summary: total=%u bytes=%u idr=%u (window: %u frames, %u bytes)\n",
                 (unsigned)frames_total, (unsigned)bytes_total, (unsigned)idr_total, (unsigned)window_frames, (unsigned)window_bytes
             );
+#endif            
             window_frames = 0;
             window_bytes = 0;
         }
+
     }
 }
 
