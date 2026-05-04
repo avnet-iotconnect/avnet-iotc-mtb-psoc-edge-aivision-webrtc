@@ -50,6 +50,7 @@
 #include "cycfg_peripherals.h"
 #include "ipc_communication.h"
 #include "app_shmem_video.h"
+#include "app_webrtc.h"
 
 /******************************************************************************
  * Macros
@@ -238,6 +239,11 @@ int main(void)
      * will park itself until app_shmem_video_start() is called from the
      * application (currently invoked from app_task once CM55 IPC is up). */
     app_shmem_video_init();
+
+    // WebRTC task in idle state. app_task starts it after Wi-Fi/NTP/SDK init
+    // and a successful AWS creds obtain. Owns the H.264 ring consumer once
+    // started, so app_shmem_video_start() must not run while WebRTC is active.
+    app_webrtc_init();
 
     if( pdPASS == result )
     {

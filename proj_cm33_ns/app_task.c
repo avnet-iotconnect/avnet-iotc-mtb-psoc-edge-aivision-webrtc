@@ -215,10 +215,10 @@ void app_task(void *pvParameters) {
     }
     printf("\nApp Task: CM55 IPC is ready. Resuming the application...\n");
 
-    /* Kick off the cross-core video NAL consumer.  Stub for now: it
-     * just polls the ring and prints what it sees.  Future WebRTC
-     * media task replaces this. */
-    app_shmem_video_start();
+    // Disabled: WebRTC task owns the ring consumer once started (see app_webrtc.c
+    // and WEBRTC_TASK.md §3.5). The ring has a single consumer slot. Re-enable
+    // for offline ring debugging only when WebRTC is not started below.
+    // app_shmem_video_start();
 
     char iotc_duid[IOTCL_CONFIG_DUID_MAX_LEN] = IOTCONNECT_DUID;
     if (0 == strlen(iotc_duid)) {
@@ -310,10 +310,6 @@ void app_task(void *pvParameters) {
         goto exit_cleanup;
     }
 
-    /* Spawn the WebRTC task. Non-blocking; the telemetry loop below keeps running.
-     * Pre-reqs are met here: Wi-Fi up, NTP synced, iotconnect_sdk_init succeeded. */
-    // app_webrtc_start();
-
     // Smoke-test the AWS creds mTLS flow before connecting MQTT.
     int creds_status = iotconnect_sdk_obtain_aws_creds();
     if (creds_status != 0) {
@@ -326,6 +322,9 @@ void app_task(void *pvParameters) {
                 c->expiration_str, iotconnect_sdk_aws_creds_seconds_until_expiry()
             );
         }
+        // WebRTC pre-reqs satisfied: Wi-Fi up, NTP synced, SDK init OK, creds cached.
+        // Non-blocking: returns immediately so the telemetry loop below keeps running.
+        app_webrtc_start();
     }
 
     for (int i = 0; i < 10; i++) {
