@@ -290,20 +290,6 @@ void app_eeprom_data_do_user_input(IotcX509CredentialsGenerate x509_creds_genera
 	NVIC_SystemReset();
 }
 
-void app_eeprom_save_dummy_data() {
-    app_eeprom_data.version = APP_DATA_VERSION;
-    app_eeprom_data.platform = (int32_t) IOTC_CT_AWS;
-    strncpy(app_eeprom_data.cpid, "my_cpid", sizeof(app_eeprom_data.cpid));
-    strncpy(app_eeprom_data.env, "my_env", sizeof(app_eeprom_data.env));
-    strncpy(app_eeprom_data.wifi_ssid, "my_wifi_ssid", sizeof(app_eeprom_data.wifi_ssid));
-    strncpy(app_eeprom_data.wifi_pass, "my_wifi_pass", sizeof(app_eeprom_data.wifi_pass));
-    strncpy(app_eeprom_data.pem_certificate, "my_cert", sizeof(app_eeprom_data.pem_certificate));
-    strncpy(app_eeprom_data.pem_private_key, "my_key", sizeof(app_eeprom_data.pem_private_key));
-    cy_en_em_eeprom_status_t eeprom_return_value;
-    eeprom_return_value = Cy_Em_EEPROM_Write(LOGICAL_EEPROM_START, &app_eeprom_data, sizeof(app_eeprom_data), &eeprom_context);
-	handle_error(eeprom_return_value, "Emulated EEPROM Write failed \r\n");
-}
-
 int app_eeprom_data_init(void) {
     cy_en_em_eeprom_status_t eeprom_return_value;
 
