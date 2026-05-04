@@ -13,6 +13,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "FreeRTOS.h"
@@ -24,6 +25,13 @@
 #include "app_webrtc.h"
 
 #include "webrtc/aws_creds.h"
+#include "webrtc/signaling.h"
+
+// WSS endpoint buffer: "wss://m1.kinesisvideo.<region>.amazonaws.com" — 128 is plenty.
+#define APP_WEBRTC_WSS_ENDPOINT_LEN 256
+
+// AWS region codes are bounded at 50 characters by API constraint.
+#define APP_WEBRTC_AWS_REGION_MAXLEN 50
 
 
 #define APP_WEBRTC_TASK_NAME       ("CM33 WebRTC")
@@ -45,7 +53,6 @@ static TaskHandle_t webrtc_task_handle = NULL;
 static volatile bool webrtc_running = false;
 static volatile bool webrtc_creds_dirty = false;
 
-static AwsCreds aws_creds;
 
 
 // Pull the M4 triplet + channel ARN from the SDK into our local AwsCreds view.
@@ -54,10 +61,7 @@ static AwsCreds aws_creds;
 // while a session is active.
 //
 // Returns 0 on success, -1 if creds or channel ARN are missing.
-//
-// Region is left as a const literal for now; will be parsed from the ARN once
-// the signaling step lands and AwsCreds is reshaped (PILOT.md M5 §1 step 2).
-static int populate_creds(void) {
+static int populate_creds(AwsCreds *out, char *region_buf, size_t region_buf_size) {
     const IotclDraCredentialsResult *c = iotconnect_sdk_aws_creds_get();
     if (NULL == c) {
         printf("[webrtc] no AWS creds cached (or expired)\n");
@@ -70,11 +74,38 @@ static int populate_creds(void) {
         return -1;
     }
 
-    aws_creds.region             = "us-east-1"; // placeholder; parse from ARN at signaling step
-    aws_creds.channel_arn        = mqtt_cfg->aws.webrtc_channel_arn;
-    aws_creds.access_key_id      = c->access_key_id;
-    aws_creds.secret_access_key  = c->secret_access_key;
-    aws_creds.session_token      = c->session_token;
+    // Parse region from ARN: "arn:aws:kinesisvideo:<region>:<account>:..."
+    // The region is the 4th colon-separated field (index 3).
+    const char *arn = mqtt_cfg->aws.webrtc_channel_arn;
+    int colons = 0;
+    const char *region_start = NULL;
+    for (const char *p = arn; *p; p++) {
+        if (':' == *p) {
+            colons++;
+            if (3 == colons) {
+                region_start = p + 1;
+            } else if (4 == colons && NULL != region_start) {
+                size_t region_len = (size_t)(p - region_start);
+                if (region_len == 0 || region_len >= region_buf_size) {
+                    printf("[webrtc] region in ARN is invalid or too long\n");
+                    return -1;
+                }
+                memcpy(region_buf, region_start, region_len);
+                region_buf[region_len] = '\0';
+                break;
+            }
+        }
+    }
+    if (NULL == region_start || '\0' == region_buf[0]) {
+        printf("[webrtc] failed to parse region from ARN: %s\n", arn);
+        return -1;
+    }
+
+    out->region             = region_buf;
+    out->channel_arn        = mqtt_cfg->aws.webrtc_channel_arn;
+    out->access_key_id      = c->access_key_id;
+    out->secret_access_key  = c->secret_access_key;
+    out->session_token      = c->session_token;
     return 0;
 }
 
@@ -93,7 +124,9 @@ static int populate_creds(void) {
  * APP_WEBRTC_POLL_IDLE_MS in steady state. See WEBRTC_TASK.md §3.4.
  */
 static int run_session(void) {
-    int rc = populate_creds();
+    char region_buf[APP_WEBRTC_AWS_REGION_MAXLEN + 1];
+    AwsCreds aws_creds;
+    int rc = populate_creds(&aws_creds, region_buf, sizeof(region_buf));
     if (0 != rc) {
         return rc;
     }
@@ -102,13 +135,56 @@ static int run_session(void) {
     printf("[webrtc] session attempt: ARN=%s region=%s creds_expires_in=%d s\n",
         aws_creds.channel_arn, aws_creds.region, seconds_left
     );
-    printf("[webrtc] AKID=%s session_token_len=%d\n",
-        aws_creds.access_key_id,
-        aws_creds.session_token ? (int) strlen(aws_creds.session_token) : 0
-    );
 
-    // Protocol implementation lands here in subsequent sessions.
-    return -1;
+    char *wss_endpoint = NULL;
+    char *signed_url = NULL;
+    size_t signed_url_size = 0;
+
+    // Step 5a: resolve the WSS endpoint via GetSignalingChannelEndpoint.
+    wss_endpoint = malloc(APP_WEBRTC_WSS_ENDPOINT_LEN);
+    if (NULL == wss_endpoint) {
+        printf("[webrtc] OOM for wss_endpoint\n");
+        return -1;
+    }
+    rc = signaling_resolve_endpoint(&aws_creds, wss_endpoint, APP_WEBRTC_WSS_ENDPOINT_LEN);
+    if (0 != rc) {
+        printf("[webrtc] signaling_resolve_endpoint failed rc=%d\n", rc);
+        goto cleanup;
+    }
+
+    // Step 5b+ stubs: build signed URL, connect, wait for offer. Not yet implemented.
+    // Size: WSS endpoint + ARN (URL-encoded ~3x) + session token (URL-encoded ~3x)
+    // + fixed overhead: AKID, date, expires, algorithm, signature, signed-headers param.
+    signed_url_size = strlen(wss_endpoint)
+        + strlen(aws_creds.channel_arn) * 3
+        + (aws_creds.session_token ? strlen(aws_creds.session_token) * 3 : 0)
+        + 512;
+    signed_url = malloc(signed_url_size);
+    if (NULL == signed_url) {
+        printf("[webrtc] OOM for signed_url (%d bytes)\n", (int) signed_url_size);
+        rc = -1;
+        goto cleanup;
+    }
+    rc = signaling_build_signed_viewer_url(&aws_creds, wss_endpoint, signed_url, signed_url_size);
+    if (0 != rc) {
+        printf("[webrtc] signaling_build_signed_viewer_url not yet implemented\n");
+        goto cleanup;
+    }
+
+    // Signing is done — raw creds are no longer needed. Drop the SDK heap copy
+    // and zero the local view so sensitive key material doesn't sit in RAM
+    // for the duration of the WSS session (which may be hours).
+    iotconnect_sdk_aws_creds_free();
+    memset(&aws_creds, 0, sizeof(aws_creds));
+    memset(region_buf, 0, sizeof(region_buf));
+
+    // Protocol implementation continues in subsequent sessions.
+    rc = -1;
+
+cleanup:
+    free(wss_endpoint);
+    free(signed_url);
+    return rc;
 }
 
 
