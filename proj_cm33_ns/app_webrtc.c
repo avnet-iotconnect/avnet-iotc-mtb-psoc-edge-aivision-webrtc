@@ -109,8 +109,14 @@ static int populate_creds(AwsCreds *out, char *region_buf, size_t region_buf_siz
         return -1;
     }
 
+    if (NULL == mqtt_cfg->client_id || '\0' == mqtt_cfg->client_id[0]) {
+        printf("[webrtc] mqtt client_id not available — needed as X-Amz-ClientId\n");
+        return -1;
+    }
+
     out->region             = region_buf;
     out->channel_arn        = mqtt_cfg->aws.webrtc_channel_arn;
+    out->client_id          = mqtt_cfg->client_id;
     out->access_key_id      = c->access_key_id;
     out->secret_access_key  = c->secret_access_key;
     out->session_token      = c->session_token;
@@ -149,9 +155,13 @@ static int run_session(void) {
     }
     rc = signaling_build_signed_viewer_url(&aws_creds, webrtc_wss_endpoint, signed_url, signed_url_size);
     if (0 != rc) {
-        printf("[webrtc] signaling_build_signed_viewer_url not yet implemented\n");
+        printf("[webrtc] signaling_build_signed_viewer_url failed rc=%d\n", rc);
         goto cleanup;
     }
+    // First-pass diagnostic: dump the URL so it can be pasted into a JS
+    // WebSocket client / wscat to verify the signature is accepted by AWS
+    // ahead of the in-tree WS handshake landing.
+    printf("[webrtc] presigned viewer URL: %s\n", signed_url);
 
     // Signing is done — raw creds are no longer needed. Drop the SDK heap copy
     // and zero the local view so sensitive key material doesn't sit in RAM
