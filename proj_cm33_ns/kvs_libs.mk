@@ -108,7 +108,10 @@ CY_IGNORE+=$(THIRD_PARTY_DIR)/amazon-kinesis-video-streams-signaling/signalingFi
 # SigV4-for-AWS-IoT-embedded-sdk (v1.3.1)
 # Used by signaling.c to sign the ConnectAsViewer WSS URL with the 1-hour AWS
 # creds triplet (AKID, secret, session token).  Defaults config taken via
-# SIGV4_DO_NOT_USE_CUSTOM_CONFIG (set above).
+# SIGV4_DO_NOT_USE_CUSTOM_CONFIG (set above). The processing buffer holds the
+# full canonical request including the session token (~1200 chars for STS), so
+# 1024 default isn't enough — bump to 2048 (matches reference KVS projects).
+DEFINES+=SIGV4_PROCESSING_BUFFER_LENGTH=2048U
 # -----------------------------------------------------------------------------
 SIGV4_DIR := $(THIRD_PARTY_DIR)/SigV4-for-AWS-IoT-embedded-sdk
 SOURCES+=$(wildcard $(SIGV4_DIR)/source/*.c)

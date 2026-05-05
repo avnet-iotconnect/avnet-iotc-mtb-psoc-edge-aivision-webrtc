@@ -36,7 +36,9 @@
 
 #define APP_WEBRTC_TASK_NAME       ("CM33 WebRTC")
 #define APP_WEBRTC_TASK_STACK      (8U * 1024U)
-#define APP_WEBRTC_TASK_PRIORITY   (tskIDLE_PRIORITY + 2U)
+// Below app_task (priority 2) for the same reason as app_shmem_video — keep
+// the busy WSS/media loop from starving app_task time slices.
+#define APP_WEBRTC_TASK_PRIORITY   (tskIDLE_PRIORITY + 1U)
 
 // Idle poll cadence + the steady-state run_session tick budget. Mirrors
 // app_shmem_video; kept identical so future ring-drain coexistence is simple.
@@ -52,6 +54,12 @@
 static TaskHandle_t webrtc_task_handle = NULL;
 static volatile bool webrtc_running = false;
 static volatile bool webrtc_creds_dirty = false;
+
+// Resolved WSS endpoint, populated synchronously from app_webrtc_start() on the
+// caller's thread (today: app_task). The webrtc task only uses the result —
+// keeping REST off the webrtc task avoids serializing TLS contexts with the
+// SDK's discovery/MQTT flow.
+static char webrtc_wss_endpoint[APP_WEBRTC_WSS_ENDPOINT_LEN];
 
 
 
@@ -110,19 +118,15 @@ static int populate_creds(AwsCreds *out, char *region_buf, size_t region_buf_siz
 }
 
 
-/* Stub. Real session shape:
- *   - signaling: connect to the KVS channel as viewer, hold the WSS open.
- *   - wait for master-initiated offer over signaling (idle WSS pump).
- *   - on offer: ICE -> DTLS -> SRTP keying -> ring consumer start.
- *   - media flows until master tears down or signaling drops.
- * "Session ended" means signaling fell over, not "browser stopped watching" —
- * a single signaling session may serve many master-initiated viewings.
- * Lands across PILOT.md M5 §1 steps 3..7. For now this proves the lifecycle
- * works: log the populated creds once, return failure, let the loop back off.
- *
- * Hard rule once protocol code lands here: no I/O may block longer than
- * APP_WEBRTC_POLL_IDLE_MS in steady state. See WEBRTC_TASK.md §3.4.
- */
+// Stub for the WSS-side session. Real shape: connect to the signaling channel
+// as viewer, pump WSS for master-initiated offers, on offer run ICE -> DTLS ->
+// SRTP keying -> ring consumer start, media flows until signaling drops.
+// "Session ended" means signaling fell over, not "browser stopped watching".
+// Hard rule once protocol code lands here: no I/O may block longer than
+// APP_WEBRTC_POLL_IDLE_MS in steady state. See WEBRTC_TASK.md §3.4.
+//
+// Pre-req: app_webrtc_start() resolved webrtc_wss_endpoint synchronously on
+// the caller's thread. This task only does WSS+ICE+DTLS+media.
 static int run_session(void) {
     char region_buf[APP_WEBRTC_AWS_REGION_MAXLEN + 1];
     AwsCreds aws_creds;
@@ -131,41 +135,19 @@ static int run_session(void) {
         return rc;
     }
 
-    int seconds_left = iotconnect_sdk_aws_creds_seconds_until_expiry();
-    printf("[webrtc] session attempt: ARN=%s region=%s creds_expires_in=%d s\n",
-        aws_creds.channel_arn, aws_creds.region, seconds_left
+    printf("[webrtc] session attempt: endpoint=%s creds_expires_in=%d s\n",
+        webrtc_wss_endpoint, iotconnect_sdk_aws_creds_seconds_until_expiry()
     );
 
-    char *wss_endpoint = NULL;
-    char *signed_url = NULL;
-    size_t signed_url_size = 0;
-
-    // Step 5a: resolve the WSS endpoint via GetSignalingChannelEndpoint.
-    wss_endpoint = malloc(APP_WEBRTC_WSS_ENDPOINT_LEN);
-    if (NULL == wss_endpoint) {
-        printf("[webrtc] OOM for wss_endpoint\n");
-        return -1;
-    }
-    rc = signaling_resolve_endpoint(&aws_creds, wss_endpoint, APP_WEBRTC_WSS_ENDPOINT_LEN);
-    if (0 != rc) {
-        printf("[webrtc] signaling_resolve_endpoint failed rc=%d\n", rc);
-        goto cleanup;
-    }
-
-    // Step 5b+ stubs: build signed URL, connect, wait for offer. Not yet implemented.
     // Size: WSS endpoint + ARN (URL-encoded ~3x) + session token (URL-encoded ~3x)
     // + fixed overhead: AKID, date, expires, algorithm, signature, signed-headers param.
-    signed_url_size = strlen(wss_endpoint)
-        + strlen(aws_creds.channel_arn) * 3
-        + (aws_creds.session_token ? strlen(aws_creds.session_token) * 3 : 0)
-        + 512;
-    signed_url = malloc(signed_url_size);
+    size_t signed_url_size = strlen(webrtc_wss_endpoint) + strlen(aws_creds.channel_arn) * 3 + strlen(aws_creds.session_token) * 3 + 512;
+    char *signed_url = malloc(signed_url_size);
     if (NULL == signed_url) {
         printf("[webrtc] OOM for signed_url (%d bytes)\n", (int) signed_url_size);
-        rc = -1;
-        goto cleanup;
+        return -1;
     }
-    rc = signaling_build_signed_viewer_url(&aws_creds, wss_endpoint, signed_url, signed_url_size);
+    rc = signaling_build_signed_viewer_url(&aws_creds, webrtc_wss_endpoint, signed_url, signed_url_size);
     if (0 != rc) {
         printf("[webrtc] signaling_build_signed_viewer_url not yet implemented\n");
         goto cleanup;
@@ -182,7 +164,6 @@ static int run_session(void) {
     rc = -1;
 
 cleanup:
-    free(wss_endpoint);
     free(signed_url);
     return rc;
 }
@@ -205,9 +186,7 @@ static void webrtc_task(void *arg) {
 
         int rc = run_session();
         if (0 != rc) {
-            printf("[webrtc] session ended rc=%d, backing off %u ms\n",
-                rc, (unsigned) APP_WEBRTC_BACKOFF_MS
-            );
+            printf("[webrtc] session ended rc=%d, backing off %u ms\n", rc, (unsigned) APP_WEBRTC_BACKOFF_MS);
         }
 
         // Backoff loop yields promptly on stop request.
@@ -240,6 +219,20 @@ bool app_webrtc_start(void) {
     if (webrtc_running) {
         return true;
     }
+
+    // REST steps run synchronously on the caller's thread (app_task) so the
+    // SDK's discovery/MQTT TLS contexts don't race the webrtc task's. The
+    // webrtc task only owns long-lived WSS/ICE/DTLS/media work.
+    char region_buf[APP_WEBRTC_AWS_REGION_MAXLEN + 1];
+    AwsCreds aws_creds;
+    if (0 != populate_creds(&aws_creds, region_buf, sizeof(region_buf))) {
+        return false;
+    }
+    if (0 != signaling_resolve_endpoint(&aws_creds, webrtc_wss_endpoint, sizeof(webrtc_wss_endpoint))) {
+        printf("[webrtc] signaling_resolve_endpoint failed\n");
+        return false;
+    }
+
     webrtc_running = true;
     printf("[webrtc] session loop enabled\n");
     return true;

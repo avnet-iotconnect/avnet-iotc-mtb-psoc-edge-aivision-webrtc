@@ -238,7 +238,7 @@ int main(void)
     /* Create the shared-memory video consumer task in idle state.  It
      * will park itself until app_shmem_video_start() is called from the
      * application (currently invoked from app_task once CM55 IPC is up). */
-    app_shmem_video_init();
+    // app_shmem_video_init();
 
     // WebRTC task in idle state. app_task starts it after Wi-Fi/NTP/SDK init
     // and a successful AWS creds obtain. Owns the H.264 ring consumer once

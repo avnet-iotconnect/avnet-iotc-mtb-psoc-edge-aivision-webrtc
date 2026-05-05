@@ -312,7 +312,7 @@ void app_task(void *pvParameters) {
 
     // Smoke-test the AWS creds mTLS flow before connecting MQTT.
     int creds_status = iotconnect_sdk_obtain_aws_creds();
-    if (creds_status != 0) {
+    if (0 != creds_status) {
         printf("AWS creds obtain failed (status=%d).\n", creds_status);
     } else {
         const IotclDraCredentialsResult *c = iotconnect_sdk_aws_creds_get();
@@ -323,7 +323,7 @@ void app_task(void *pvParameters) {
             );
         }
         // WebRTC pre-reqs satisfied: Wi-Fi up, NTP synced, SDK init OK, creds cached.
-        // Non-blocking: returns immediately so the telemetry loop below keeps running.
+        // _start runs the REST steps synchronously here, then flips the task.
         app_webrtc_start();
     }
 

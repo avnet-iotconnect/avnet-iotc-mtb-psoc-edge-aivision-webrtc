@@ -22,7 +22,9 @@
 
 #define APP_SHMEM_VIDEO_TASK_NAME       ("CM33 Shmem Video")
 #define APP_SHMEM_VIDEO_TASK_STACK      (10U * 1024U)
-#define APP_SHMEM_VIDEO_TASK_PRIORITY   (tskIDLE_PRIORITY + 2U)
+// Below app_task (priority 2) so TLS handshakes during SDK init aren't
+// starved by the busy-poll consumer once CM55 starts pumping frames.
+#define APP_SHMEM_VIDEO_TASK_PRIORITY   (tskIDLE_PRIORITY + 1U)
 
 /* Polling cadence.  PILOT.md §5.4 calls for 20 ms; encoder runs at
  * ~250 ms per frame so we have ~12x headroom on the consumer side. */

@@ -50,8 +50,8 @@
 
 // Authorization header value output from SigV4_GenerateHTTPAuthorization.
 // "AWS4-HMAC-SHA256 Credential=.../kinesisvideo/aws4_request, SignedHeaders=..., Signature=<64>"
-// ~350 chars; 512 is safe.
-#define SIG_AUTH_BUF        512
+// Real KVS values run ~380-450 chars; 1024 leaves comfortable headroom.
+#define SIG_AUTH_BUF        1024
 
 // KVS service name for SigV4.
 #define KVS_SERVICE         "kinesisvideo"
@@ -66,7 +66,11 @@
 // signaling_resolve_endpoint. One call at a time (single WebRTC task).
 static char s_url_buf[SIG_URL_BUF];
 static char s_body_buf[SIG_BODY_BUF];
-static char s_auth_buf[SIG_AUTH_BUF + 1]; // +1: null-terminate after SigV4 fills SIG_AUTH_BUF bytes
+// SigV4_GenerateHTTPAuthorization treats authBufLen as in/out: input is capacity,
+// output is bytes actually written (always <= capacity). We pass SIG_AUTH_BUF in,
+// then null-terminate at the returned length — the +1 byte covers the case where
+// SigV4 fills the buffer completely and we still need somewhere for the '\0'.
+static char s_auth_buf[SIG_AUTH_BUF + 1];
 static mbedtls_sha256_context s_sha_ctx;
 
 // -------------------------------------------------------------------------
@@ -164,8 +168,7 @@ int signaling_resolve_endpoint(const AwsCreds *creds, char *out_endpoint, size_t
     //    Canonical form: "<name>:<value>\n" sorted lexicographically.
     //    We sign: host, x-amz-date, x-amz-security-token (sorted order).
     //    session_token varies (~1200 chars for STS tokens) — malloc to exact fit.
-    size_t token_len = creds->session_token ? strlen(creds->session_token) : 0;
-    size_t canon_hdr_size = strlen(host) + sizeof(date_iso) + token_len + SIG_CANON_HDR_OVERHEAD;
+    size_t canon_hdr_size = strlen(host) + sizeof(date_iso) + strlen(creds->session_token) + SIG_CANON_HDR_OVERHEAD;
     canon_hdr_buf = malloc(canon_hdr_size);
     if (NULL == canon_hdr_buf) {
         printf("[signaling] OOM for canon_hdr_buf (%d bytes)\n", (int) canon_hdr_size);
@@ -177,8 +180,7 @@ int signaling_resolve_endpoint(const AwsCreds *creds, char *out_endpoint, size_t
         "host:%s\n"
         "x-amz-date:%s\n"
         "x-amz-security-token:%s\n",
-        host, date_iso,
-        creds->session_token ? creds->session_token : ""
+        host, date_iso, creds->session_token
     );
     if (hdr_len <= 0 || (size_t) hdr_len >= canon_hdr_size) {
         printf("[signaling] canon_hdr_buf overflow — SIG_CANON_HDR_OVERHEAD too small\n");
@@ -245,7 +247,7 @@ int signaling_resolve_endpoint(const AwsCreds *creds, char *out_endpoint, size_t
     IotConnectHttpHeader extra_headers[3] = {
         { .name = "Authorization",        .value = s_auth_buf },
         { .name = "x-amz-date",           .value = date_iso   },
-        { .name = "x-amz-security-token", .value = (char *) (creds->session_token ? creds->session_token : "") },
+        { .name = "x-amz-security-token", .value = (char *) creds->session_token },
     };
     IotConnectHttpOpts opts = {
         .ca_cert     = (char *) IOTCL_AMAZON_ROOT_CA1,
@@ -314,13 +316,11 @@ int signaling_build_signed_viewer_url(
     size_t cap
 ) {
     (void) creds;
-    printf("[signaling] signaling_build_signed_viewer_url: STUB (endpoint=%s)\n",
-        wss_endpoint ? wss_endpoint : "<null>");
-    if (cap > 0) {
-        snprintf(out_url, cap, "wss://%s/?role=VIEWER&...sigv4...",
-            wss_endpoint ? wss_endpoint : "?");
-    }
-    return -1; // stub — returns error so caller backs off
+    (void) wss_endpoint;
+    (void) out_url;
+    (void) cap;
+    printf("[signaling] signaling_build_signed_viewer_url: STUB\n");
+    return -1;
 }
 
 SignalingHandle signaling_connect(const char *signed_url) {
