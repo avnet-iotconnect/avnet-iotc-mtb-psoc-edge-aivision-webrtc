@@ -241,6 +241,11 @@ void app_task(void *pvParameters) {
     IotConnectClientConfig config;
     iotconnect_sdk_init_config(&config);
     if (strlen(IOTCONNECT_DEVICE_CERT) > 0) {
+        if (app_eeprom_data_is_valid()) {
+            printf("Warning: Device certificate is set in app_config.h, but device configuration data exits in flash.\n");
+            printf("Please erase external flash using the ModusToolbox Programmer.\n");
+            goto exit_cleanup;
+        }
         printf("Using certificate from app_config.h\n");
     } else if (0 == strlen(app_eeprom_data_get_certificate(IOTCONNECT_DEVICE_CERT))) {
 	    printf("\nThe board needs to be configured.\n");
