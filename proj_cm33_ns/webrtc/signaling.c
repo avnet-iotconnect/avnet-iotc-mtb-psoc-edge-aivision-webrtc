@@ -6,9 +6,11 @@
 /*
  * Signaling layer.
  *
- * Step 5a (GetSignalingChannelEndpoint, REST) and Step 5b URL signing
- * (signaling_build_signed_viewer_url) are implemented. The WSS handshake +
- * frame exchange (signaling_connect / wait_for_offer / send_answer) are stubs.
+ * Step 5a (GetSignalingChannelEndpoint, REST), Step 5b URL signing
+ * (signaling_build_signed_viewer_url) and the WSS upgrade handshake
+ * (signaling_connect / signaling_disconnect) are implemented. WS frame
+ * exchange (wait_for_offer / send_answer) is still stubbed — wslay glue
+ * is the next session.
  *
  * GetSignalingChannelEndpoint flow:
  *   1. Signaling_ConstructGetSignalingChannelEndpointRequest  — builds URL + body
@@ -601,10 +603,11 @@ enc_fail:
 #define WSS_HANDSHAKE_SEND_TIMEOUT  5000U
 #define WSS_HANDSHAKE_RECV_TIMEOUT  5000U
 
-// Outgoing request line + headers fit comfortably in 1 KB. The signed URL
-// path-and-query is the only large field: presigned WSS URL is ~1.2 KB total
-// of which ~50 bytes is "wss://<host>/" — so path-and-query ~1150 bytes.
-#define WSS_REQ_BUF_LEN             1536
+// Fixed overhead in the upgrade request: method/version/literal headers/CRLFs.
+// "GET  HTTP/1.1\r\n" + Host: \r\n + Upgrade: websocket\r\n + Connection: Upgrade\r\n
+// + Sec-WebSocket-Key: <24>\r\n + Sec-WebSocket-Version: 13\r\n + \r\n. ~150 bytes;
+// 256 leaves headroom for accidental drift in the header set.
+#define WSS_REQ_FIXED_OVERHEAD      256
 
 // Response head only — we read until "\r\n\r\n" then stop. AWS' 101 response
 // is ~200 bytes (a handful of headers); 1 KB is generous.
@@ -795,15 +798,18 @@ SignalingHandle signaling_connect(const char *signed_url) {
         return NULL;
     }
 
-    // 3. Build the upgrade request.
-    char *req = malloc(WSS_REQ_BUF_LEN);
+    // 3. Build the upgrade request. Size the buffer from the actual URL —
+    //    presigned URLs run multi-KB once the URI-encoded session token is
+    //    in there, so a fixed scratch doesn't cut it.
+    size_t req_cap = strlen(path) + strlen(host) + WSS_REQ_FIXED_OVERHEAD;
+    char *req = malloc(req_cap);
     if (NULL == req) {
         cy_awsport_network_disconnect(&g_sig.net_ctx);
         cy_awsport_network_delete(&g_sig.net_ctx);
         free(host);
         return NULL;
     }
-    int req_len = snprintf(req, WSS_REQ_BUF_LEN,
+    int req_len = snprintf(req, req_cap,
         "GET %s HTTP/1.1\r\n"
         "Host: %s\r\n"
         "Upgrade: websocket\r\n"
@@ -813,8 +819,8 @@ SignalingHandle signaling_connect(const char *signed_url) {
         "\r\n",
         path, host, nonce_b64
     );
-    if (req_len <= 0 || req_len >= WSS_REQ_BUF_LEN) {
-        printf("[signaling] WSS upgrade request did not fit in %d bytes\n", WSS_REQ_BUF_LEN);
+    if (req_len <= 0 || (size_t) req_len >= req_cap) {
+        printf("[signaling] WSS upgrade request did not fit in %d bytes\n", (int) req_cap);
         free(req);
         cy_awsport_network_disconnect(&g_sig.net_ctx);
         cy_awsport_network_delete(&g_sig.net_ctx);

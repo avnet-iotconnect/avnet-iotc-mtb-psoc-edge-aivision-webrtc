@@ -166,10 +166,22 @@ static int run_session(void) {
 
     // Signing is done — raw creds are no longer needed. Drop the SDK heap copy
     // and zero the local view so sensitive key material doesn't sit in RAM
-    // for the duration of the WSS session (which may be hours).
+    // for the duration of the WSS session.
     iotconnect_sdk_aws_creds_free();
     memset(&aws_creds, 0, sizeof(aws_creds));
     memset(region_buf, 0, sizeof(region_buf));
+
+    // WSS upgrade handshake. Today this proves the transport path: open TLS,
+    // send GET ... Upgrade, verify 101 + Sec-WebSocket-Accept, tear down.
+    // Next session keeps the connection alive and hands it to wslay for
+    // SDP/ICE frame exchange.
+    SignalingHandle sig = signaling_connect(signed_url);
+    if (NULL == sig) {
+        printf("[webrtc] signaling_connect failed\n");
+        rc = -1;
+        goto cleanup;
+    }
+    signaling_disconnect(sig);
 
     // Protocol implementation continues in subsequent sessions.
     rc = -1;

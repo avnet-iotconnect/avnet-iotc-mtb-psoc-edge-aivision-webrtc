@@ -243,7 +243,8 @@ void app_task(void *pvParameters) {
     if (strlen(IOTCONNECT_DEVICE_CERT) > 0) {
         if (app_eeprom_data_is_valid()) {
             printf("Warning: Device certificate is set in app_config.h, but device configuration data exits in flash.\n");
-            printf("Please erase external flash using the ModusToolbox Programmer.\n");
+            printf("Please either clear the certificate and private key form app_config.h\n");
+            printf("or erase external flash using the ModusToolbox Programmer.\n");
             goto exit_cleanup;
         }
         printf("Using certificate from app_config.h\n");
