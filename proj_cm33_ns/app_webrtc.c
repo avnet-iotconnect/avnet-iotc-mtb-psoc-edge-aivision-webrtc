@@ -25,6 +25,7 @@
 #include "app_webrtc.h"
 
 #include "webrtc/aws_creds.h"
+#include "webrtc/csprng.h"
 #include "webrtc/signaling.h"
 
 // WSS endpoint buffer: "wss://m1.kinesisvideo.<region>.amazonaws.com" — 128 is plenty.
@@ -211,6 +212,14 @@ void app_webrtc_init(void) {
     if (NULL != webrtc_task_handle) {
         return;
     }
+
+    // Bring the WebRTC-owned DRBG up early. Signaling, ICE, and DTLS will all
+    // pull from it; cy-secure-sockets has its own DRBG we can't share.
+    if (0 != webrtc_csprng_init()) {
+        printf("[webrtc] csprng init failed — abort task creation\n");
+        return;
+    }
+
     BaseType_t ok = xTaskCreate(webrtc_task, APP_WEBRTC_TASK_NAME, APP_WEBRTC_TASK_STACK,
         NULL, APP_WEBRTC_TASK_PRIORITY, &webrtc_task_handle
     );

@@ -31,6 +31,8 @@
 #include "FreeRTOS.h"
 #include "task.h"
 
+#include "mbedtls/base64.h"
+#include "mbedtls/sha1.h"
 #include "mbedtls/sha256.h"
 
 #include "sigv4.h"
@@ -40,6 +42,10 @@
 #include "iotcl_dra_url.h"
 #include "iotc_http_client.h"
 
+#include "cy_tcpip_port_secure_sockets.h"
+#include "transport_interface.h"
+
+#include "webrtc/csprng.h"
 #include "webrtc/signaling.h"
 
 // -------------------------------------------------------------------------
@@ -467,19 +473,27 @@ int signaling_build_signed_viewer_url(
 
     size_t query_len = (size_t)(q_cur - out_url);
 
-    // 5. Build canonical headers. We sign only "host" — same as the reference
-    //    port. AWS allows minimal signing for presigned URLs.
-    char canon_hdr[64 + 1];
-    int hdr_len = snprintf(canon_hdr, sizeof(canon_hdr), "host:%.*s\n", (int) host_len, host_start);
-    if (hdr_len <= 0 || (size_t) hdr_len >= sizeof(canon_hdr)) {
-        printf("[signaling] canon_hdr overflow (host_len=%d)\n", (int) host_len);
+    // 5. Build the headers in plain HTTP form ("host: <host>\r\n") and let
+    //    SigV4 do the canonicalization itself. The HEADERS_ARE_CANONICAL path
+    //    requires the caller to also emit the empty-line separator between
+    //    canonical headers and signed-headers in the canonical request — the
+    //    SigV4 lib doesn't add it when the flag is set. Dropping the flag
+    //    sidesteps that footgun and matches the working KVS reference.
+    char hdr_buf[80];
+    int hdr_len = snprintf(hdr_buf, sizeof(hdr_buf), "host: %.*s\r\n", (int) host_len, host_start);
+    if (hdr_len <= 0 || (size_t) hdr_len >= sizeof(hdr_buf)) {
+        printf("[signaling] hdr_buf overflow (host_len=%d)\n", (int) host_len);
         return -1;
     }
 
     // 6. Sign with SigV4. QUERY_IS_CANONICAL tells SigV4 to take our query
-    //    bytes verbatim (don't re-canonicalize), HEADERS_ARE_CANONICAL same
-    //    for headers. IS_PRESIGNED_URL makes SigV4 use the literal string
-    //    "UNSIGNED-PAYLOAD" as the payload hash — required for presigned URLs.
+    //    bytes verbatim (don't re-canonicalize). We deliberately do NOT set
+    //    IS_PRESIGNED_URL: AWS KVS-WebRTC accepts standard SigV4 presigned
+    //    URLs where the payload hash is SHA256("") (empty payload) rather
+    //    than the "UNSIGNED-PAYLOAD" literal — this matches the working KVS
+    //    reference port. Setting IS_PRESIGNED_URL forced "UNSIGNED-PAYLOAD"
+    //    into the canonical request, which produced a signature AWS rejected
+    //    with HTTP 403.
     SigV4CryptoInterface_t crypto = {
         .hashInit      = sha256_init_cb,
         .hashUpdate    = sha256_update_cb,
@@ -497,15 +511,12 @@ int signaling_build_signed_viewer_url(
     SigV4HttpParameters_t http_params = {
         .pHttpMethod   = "GET",
         .httpMethodLen = 3,
-        .flags         = SIGV4_HTTP_PATH_IS_CANONICAL_FLAG
-                       | SIGV4_HTTP_QUERY_IS_CANONICAL_FLAG
-                       | SIGV4_HTTP_HEADERS_ARE_CANONICAL_FLAG
-                       | SIGV4_HTTP_IS_PRESIGNED_URL,
+        .flags         = SIGV4_HTTP_QUERY_IS_CANONICAL_FLAG,
         .pPath      = "/",
         .pathLen    = 1,
         .pQuery     = out_url,
         .queryLen   = query_len,
-        .pHeaders   = canon_hdr,
+        .pHeaders   = hdr_buf,
         .headersLen = (size_t) hdr_len,
         .pPayload   = NULL,
         .payloadLen = 0,
@@ -567,24 +578,329 @@ enc_fail:
 }
 
 // -------------------------------------------------------------------------
-// Step 5b stubs — WSS handshake + message exchange (next session)
+// Step 5b — WSS handshake (HTTP/1.1 Upgrade)
 // -------------------------------------------------------------------------
+//
+// We hand-roll the upgrade request and response parse rather than dragging in
+// coreHTTP. The wire shape is small and well-defined; see RFC 6455 §1.3 / §4.
+// After the 101 response is verified, the next session hands the still-open
+// NetworkContext_t to wslay for frame I/O.
+//
+// Today's signaling_connect() opens the TLS connection, runs the upgrade,
+// verifies Sec-WebSocket-Accept, then tears down. This proves the transport
+// path end-to-end ahead of wiring wslay.
+
+#define WSS_PORT                    443
+#define WSS_RFC6455_GUID            "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+#define WSS_NONCE_LEN               16
+#define WSS_NONCE_B64_LEN           25  /* base64(16) = 24 + null */
+#define WSS_ACCEPT_B64_LEN          29  /* base64(SHA1=20) = 28 + null */
+
+// Send/receive timeouts for the upgrade handshake (ms). The handshake is a
+// single round-trip — if AWS doesn't respond in 5 s something is wrong.
+#define WSS_HANDSHAKE_SEND_TIMEOUT  5000U
+#define WSS_HANDSHAKE_RECV_TIMEOUT  5000U
+
+// Outgoing request line + headers fit comfortably in 1 KB. The signed URL
+// path-and-query is the only large field: presigned WSS URL is ~1.2 KB total
+// of which ~50 bytes is "wss://<host>/" — so path-and-query ~1150 bytes.
+#define WSS_REQ_BUF_LEN             1536
+
+// Response head only — we read until "\r\n\r\n" then stop. AWS' 101 response
+// is ~200 bytes (a handful of headers); 1 KB is generous.
+#define WSS_RESP_BUF_LEN            1024
+
 
 struct SignalingCtx {
-    int dummy;
+    NetworkContext_t net_ctx;
+    bool connected;
 };
 
 static struct SignalingCtx g_sig;
 
+// Split a "wss://<host>/<path-and-query>" URL into a malloc'd host and a
+// path pointer (into the original buffer, after the host). On success the
+// caller must free *out_host. Returns 0 on success, -1 on malformed URL.
+static int wss_url_split(const char *url, char **out_host, const char **out_path) {
+    if (0 != strncmp(url, "wss://", 6)) {
+        printf("[signaling] not a wss:// URL\n");
+        return -1;
+    }
+    const char *host_start = url + 6;
+    const char *path_start = strchr(host_start, '/');
+    if (NULL == path_start) {
+        printf("[signaling] wss URL missing path\n");
+        return -1;
+    }
+    size_t host_len = (size_t)(path_start - host_start);
+    if (0 == host_len) {
+        printf("[signaling] wss URL has empty host\n");
+        return -1;
+    }
+    char *host = malloc(host_len + 1);
+    if (NULL == host) {
+        return -1;
+    }
+    memcpy(host, host_start, host_len);
+    host[host_len] = '\0';
+    *out_host = host;
+    *out_path = path_start;
+    return 0;
+}
+
+// Compute the expected Sec-WebSocket-Accept value: base64(SHA1(client_key + GUID)).
+// out must be at least WSS_ACCEPT_B64_LEN. Returns 0 on success.
+static int wss_compute_accept(const char *client_key_b64, char *out, size_t out_size) {
+    unsigned char concat[WSS_NONCE_B64_LEN - 1 + sizeof(WSS_RFC6455_GUID) - 1];
+    size_t key_len = strlen(client_key_b64);
+    if (key_len + sizeof(WSS_RFC6455_GUID) - 1 > sizeof(concat)) {
+        return -1;
+    }
+    memcpy(concat, client_key_b64, key_len);
+    memcpy(concat + key_len, WSS_RFC6455_GUID, sizeof(WSS_RFC6455_GUID) - 1);
+
+    unsigned char sha1[20];
+    if (0 != mbedtls_sha1(concat, key_len + sizeof(WSS_RFC6455_GUID) - 1, sha1)) {
+        return -1;
+    }
+    size_t out_len = 0;
+    if (0 != mbedtls_base64_encode((unsigned char *) out, out_size, &out_len, sha1, sizeof(sha1))) {
+        return -1;
+    }
+    return 0;
+}
+
+// Read response head into resp_buf until "\r\n\r\n" or buffer full / timeout.
+// Returns the number of bytes read on success, -1 on error. The buffer is NOT
+// null-terminated by this function; caller does that using the returned length.
+static int wss_recv_head(NetworkContext_t *net, uint8_t *resp_buf, size_t resp_cap) {
+    size_t total = 0;
+    // Look for "\r\n\r\n" — the four-byte head terminator. Since each
+    // cy_awsport_network_receive call returns whatever happened to arrive,
+    // we may need several.
+    while (total < resp_cap) {
+        int32_t n = cy_awsport_network_receive(net, resp_buf + total, resp_cap - total);
+        if (n < 0) {
+            printf("[signaling] cy_awsport_network_receive failed: %d\n", (int) n);
+            return -1;
+        }
+        if (0 == n) {
+            printf("[signaling] WSS upgrade recv timeout\n");
+            return -1;
+        }
+        total += (size_t) n;
+        if (total >= 4) {
+            for (size_t i = 0; i + 3 < total; i++) {
+                if (resp_buf[i]   == '\r' && resp_buf[i+1] == '\n'
+                 && resp_buf[i+2] == '\r' && resp_buf[i+3] == '\n') {
+                    return (int) total;
+                }
+            }
+        }
+    }
+    printf("[signaling] WSS upgrade response head exceeded %d bytes\n", (int) resp_cap);
+    return -1;
+}
+
+// Find a header line "<name>:" in the response (case-insensitive) and return a
+// pointer to the value (skipping the colon and any leading whitespace), with
+// *out_value_len set to the value length up to the line's CRLF. Returns NULL
+// if not found. resp must point at the start of headers (after status line).
+static const char *wss_find_header(const char *resp, size_t resp_len, const char *name, size_t *out_value_len) {
+    size_t name_len = strlen(name);
+    for (size_t i = 0; i + name_len < resp_len; ) {
+        // Match "<name>:" case-insensitively at start of line.
+        bool match = true;
+        for (size_t j = 0; j < name_len; j++) {
+            char a = resp[i + j];
+            char b = name[j];
+            // ASCII tolower
+            if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+            if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
+            if (a != b) { match = false; break; }
+        }
+        if (match && i + name_len < resp_len && resp[i + name_len] == ':') {
+            // Skip colon + LWS.
+            size_t v = i + name_len + 1;
+            while (v < resp_len && (resp[v] == ' ' || resp[v] == '\t')) v++;
+            // Find CRLF.
+            size_t e = v;
+            while (e + 1 < resp_len && !(resp[e] == '\r' && resp[e+1] == '\n')) e++;
+            *out_value_len = e - v;
+            return resp + v;
+        }
+        // Advance to next line.
+        while (i + 1 < resp_len && !(resp[i] == '\r' && resp[i+1] == '\n')) i++;
+        i += 2;
+    }
+    return NULL;
+}
+
+
 SignalingHandle signaling_connect(const char *signed_url) {
-    (void) signed_url;
-    printf("[signaling] signaling_connect: STUB\n");
+    if (NULL == signed_url) {
+        return NULL;
+    }
+    if (g_sig.connected) {
+        printf("[signaling] signaling_connect called while already connected\n");
+        return NULL;
+    }
+
+    char *host = NULL;
+    const char *path = NULL;
+    if (0 != wss_url_split(signed_url, &host, &path)) {
+        return NULL;
+    }
+
+    // 1. Generate Sec-WebSocket-Key: 16 random bytes, base64-encoded.
+    uint8_t nonce[WSS_NONCE_LEN];
+    if (0 != webrtc_csprng_bytes(nonce, sizeof(nonce))) {
+        printf("[signaling] csprng failed for Sec-WebSocket-Key\n");
+        free(host);
+        return NULL;
+    }
+    char nonce_b64[WSS_NONCE_B64_LEN];
+    size_t nonce_b64_len = 0;
+    if (0 != mbedtls_base64_encode((unsigned char *) nonce_b64, sizeof(nonce_b64), &nonce_b64_len, nonce, sizeof(nonce))) {
+        printf("[signaling] base64 encode failed for Sec-WebSocket-Key\n");
+        free(host);
+        return NULL;
+    }
+    nonce_b64[nonce_b64_len] = '\0';
+
+    // 2. Open TLS connection to host:443. Cert verify against AmazonRootCA1.
+    cy_awsport_server_info_t server_info = {
+        .host_name = host,
+        .port      = WSS_PORT,
+    };
+    cy_awsport_ssl_credentials_t ssl = {
+        .root_ca           = (const char *) IOTCL_AMAZON_ROOT_CA1,
+        .root_ca_size      = strlen(IOTCL_AMAZON_ROOT_CA1) + 1,
+        .root_ca_verify_mode = CY_AWS_ROOTCA_VERIFY_REQUIRED,
+        .sni_host_name     = host,
+        .sni_host_name_size = strlen(host) + 1,
+    };
+
+    cy_rslt_t r = cy_awsport_network_create(&g_sig.net_ctx, &server_info, &ssl, NULL, NULL);
+    if (CY_RSLT_SUCCESS != r) {
+        printf("[signaling] cy_awsport_network_create failed: 0x%08lx\n", (unsigned long) r);
+        free(host);
+        return NULL;
+    }
+    r = cy_awsport_network_connect(&g_sig.net_ctx, WSS_HANDSHAKE_SEND_TIMEOUT, WSS_HANDSHAKE_RECV_TIMEOUT);
+    if (CY_RSLT_SUCCESS != r) {
+        printf("[signaling] cy_awsport_network_connect failed: 0x%08lx\n", (unsigned long) r);
+        cy_awsport_network_delete(&g_sig.net_ctx);
+        free(host);
+        return NULL;
+    }
+
+    // 3. Build the upgrade request.
+    char *req = malloc(WSS_REQ_BUF_LEN);
+    if (NULL == req) {
+        cy_awsport_network_disconnect(&g_sig.net_ctx);
+        cy_awsport_network_delete(&g_sig.net_ctx);
+        free(host);
+        return NULL;
+    }
+    int req_len = snprintf(req, WSS_REQ_BUF_LEN,
+        "GET %s HTTP/1.1\r\n"
+        "Host: %s\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        "Sec-WebSocket-Key: %s\r\n"
+        "Sec-WebSocket-Version: 13\r\n"
+        "\r\n",
+        path, host, nonce_b64
+    );
+    if (req_len <= 0 || req_len >= WSS_REQ_BUF_LEN) {
+        printf("[signaling] WSS upgrade request did not fit in %d bytes\n", WSS_REQ_BUF_LEN);
+        free(req);
+        cy_awsport_network_disconnect(&g_sig.net_ctx);
+        cy_awsport_network_delete(&g_sig.net_ctx);
+        free(host);
+        return NULL;
+    }
+
+    int32_t sent = cy_awsport_network_send(&g_sig.net_ctx, req, (size_t) req_len);
+    free(req);
+    if (sent != req_len) {
+        printf("[signaling] WSS upgrade send short/failed: %d/%d\n", (int) sent, req_len);
+        cy_awsport_network_disconnect(&g_sig.net_ctx);
+        cy_awsport_network_delete(&g_sig.net_ctx);
+        free(host);
+        return NULL;
+    }
+
+    // 4. Receive the response head.
+    uint8_t resp[WSS_RESP_BUF_LEN];
+    int resp_len = wss_recv_head(&g_sig.net_ctx, resp, sizeof(resp));
+    if (resp_len < 0) {
+        cy_awsport_network_disconnect(&g_sig.net_ctx);
+        cy_awsport_network_delete(&g_sig.net_ctx);
+        free(host);
+        return NULL;
+    }
+
+    // 5. Verify status line is "HTTP/1.1 101".
+    //    Min length of a valid 101 line is "HTTP/1.1 101 X\r\n" — 16 bytes.
+    if (resp_len < 16 || 0 != memcmp(resp, "HTTP/1.1 101", 12)) {
+        // Print the status line for triage.
+        size_t line_end = 0;
+        while (line_end + 1 < (size_t) resp_len && !(resp[line_end] == '\r' && resp[line_end+1] == '\n')) line_end++;
+        printf("[signaling] WSS upgrade not 101: %.*s\n", (int) line_end, (const char *) resp);
+        cy_awsport_network_disconnect(&g_sig.net_ctx);
+        cy_awsport_network_delete(&g_sig.net_ctx);
+        free(host);
+        return NULL;
+    }
+
+    // 6. Find Sec-WebSocket-Accept and verify it matches base64(SHA1(key+GUID)).
+    //    Skip the status line so the header search starts at the first header.
+    size_t hdr_off = 0;
+    while (hdr_off + 1 < (size_t) resp_len && !(resp[hdr_off] == '\r' && resp[hdr_off+1] == '\n')) hdr_off++;
+    hdr_off += 2;
+    size_t accept_len = 0;
+    const char *accept_val = wss_find_header((const char *) resp + hdr_off, (size_t) resp_len - hdr_off,
+                                             "Sec-WebSocket-Accept", &accept_len);
+    if (NULL == accept_val) {
+        printf("[signaling] WSS upgrade response missing Sec-WebSocket-Accept\n");
+        cy_awsport_network_disconnect(&g_sig.net_ctx);
+        cy_awsport_network_delete(&g_sig.net_ctx);
+        free(host);
+        return NULL;
+    }
+    char expected[WSS_ACCEPT_B64_LEN];
+    if (0 != wss_compute_accept(nonce_b64, expected, sizeof(expected))) {
+        printf("[signaling] failed to compute expected Sec-WebSocket-Accept\n");
+        cy_awsport_network_disconnect(&g_sig.net_ctx);
+        cy_awsport_network_delete(&g_sig.net_ctx);
+        free(host);
+        return NULL;
+    }
+    size_t expected_len = strlen(expected);
+    if (accept_len != expected_len || 0 != memcmp(accept_val, expected, expected_len)) {
+        printf("[signaling] Sec-WebSocket-Accept mismatch (got %.*s, want %s)\n",
+            (int) accept_len, accept_val, expected);
+        cy_awsport_network_disconnect(&g_sig.net_ctx);
+        cy_awsport_network_delete(&g_sig.net_ctx);
+        free(host);
+        return NULL;
+    }
+
+    free(host);
+    g_sig.connected = true;
+    printf("[signaling] WS upgrade OK (101 Switching Protocols)\n");
     return &g_sig;
 }
 
 void signaling_disconnect(SignalingHandle sig) {
-    (void) sig;
-    printf("[signaling] signaling_disconnect: STUB\n");
+    if (NULL == sig || !sig->connected) {
+        return;
+    }
+    cy_awsport_network_disconnect(&sig->net_ctx);
+    cy_awsport_network_delete(&sig->net_ctx);
+    sig->connected = false;
 }
 
 int signaling_wait_for_offer(SignalingHandle sig, const char **out_offer) {
