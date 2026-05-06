@@ -110,11 +110,9 @@ static int populate_creds(AwsCreds *out, char *region_buf, size_t region_buf_siz
         return -1;
     }
 
-    if (NULL == mqtt_cfg->client_id || '\0' == mqtt_cfg->client_id[0]) {
-        printf("[webrtc] mqtt client_id not available — needed as X-Amz-ClientId\n");
-        return -1;
-    }
-
+    // client_id is unused on the master URL (X-Amz-ClientId is viewer-only)
+    // but the AwsCreds field is kept populated so future viewer-side use
+    // doesn't have to re-plumb. NULL-tolerant.
     out->region             = region_buf;
     out->channel_arn        = mqtt_cfg->aws.webrtc_channel_arn;
     out->client_id          = mqtt_cfg->client_id;
@@ -126,8 +124,10 @@ static int populate_creds(AwsCreds *out, char *region_buf, size_t region_buf_siz
 
 
 // Stub for the WSS-side session. Real shape: connect to the signaling channel
-// as viewer, pump WSS for master-initiated offers, on offer run ICE -> DTLS ->
+// as MASTER, pump WSS for viewer-initiated offers, on offer run ICE -> DTLS ->
 // SRTP keying -> ring consumer start, media flows until signaling drops.
+// Role naming gotcha: "master" is the on-channel endpoint that browsers
+// (KVS "viewers") connect to. A camera *sending* video out is the master.
 // "Session ended" means signaling fell over, not "browser stopped watching".
 // Hard rule once protocol code lands here: no I/O may block longer than
 // APP_WEBRTC_POLL_IDLE_MS in steady state. See WEBRTC_TASK.md §3.4.
@@ -154,20 +154,21 @@ static int run_session(void) {
         printf("[webrtc] OOM for signed_url (%d bytes)\n", (int) signed_url_size);
         return -1;
     }
-    rc = signaling_build_signed_viewer_url(&aws_creds, webrtc_wss_endpoint, signed_url, signed_url_size);
+    rc = signaling_build_signed_url(&aws_creds, webrtc_wss_endpoint, signed_url, signed_url_size);
     if (0 != rc) {
-        printf("[webrtc] signaling_build_signed_viewer_url failed rc=%d\n", rc);
+        printf("[webrtc] signaling_build_signed_url failed rc=%d\n", rc);
         goto cleanup;
     }
     // First-pass diagnostic: dump the URL so it can be pasted into a JS
     // WebSocket client / wscat to verify the signature is accepted by AWS
     // ahead of the in-tree WS handshake landing.
-    printf("[webrtc] presigned viewer URL: %s\n", signed_url);
+    printf("[webrtc] presigned master URL: %s\n", signed_url);
 
-    // Signing is done — raw creds are no longer needed. Drop the SDK heap copy
-    // and zero the local view so sensitive key material doesn't sit in RAM
-    // for the duration of the WSS session.
-    iotconnect_sdk_aws_creds_free();
+    // Zero the local view so the AwsCreds pointers don't sit on the stack for
+    // the duration of the WSS session. The SDK-side cached triplet is *not*
+    // freed here — failed sessions retry, and re-obtaining via mTLS every
+    // back-off would be heavy. Cache lifetime is now bounded by either
+    // expiry (M4 plug points) or app_webrtc_stop().
     memset(&aws_creds, 0, sizeof(aws_creds));
     memset(region_buf, 0, sizeof(region_buf));
 
@@ -187,20 +188,29 @@ static int run_session(void) {
         return -1;
     }
 
-    // Increment B gate: drive the wslay event loop without faulting. KVS viewer
-    // sessions are master-initiated, so an idle timeout (rc==1) is the expected
-    // happy path until a browser actually publishes an offer. Any negative rc
-    // is fatal — tear down, back off, retry.
+    printf("[webrtc] WS connection established, waiting for offer...\n");
+
+    // Block until a viewer (browser) publishes an offer or the socket dies.
+    // We're MASTER on this channel and may idle indefinitely waiting for a
+    // viewer to show up; any non-zero rc is fatal (transport error, peer
+    // close) and falls through to disconnect.
     const char *offer = NULL;
     int wait_rc = signaling_wait_for_offer(sig, &offer);
-    if (wait_rc < 0) {
-        printf("[webrtc] signaling_wait_for_offer: error\n");
-    } else if (1 == wait_rc) {
-        printf("[webrtc] signaling_wait_for_offer: idle (no offer yet)\n");
-    } else {
+    if (0 == wait_rc) {
         printf("[webrtc] WS offer received (%u bytes) — parsing TBD\n",
                (unsigned)(NULL != offer ? strlen(offer) : 0));
+        // TBD: parse JSON envelope (messageType / messagePayload, base64) →
+        // SDP_OFFER → ICE → DTLS → SRTP keying → ring consumer start.
+        // Until Increment C+ lands, hold here so the offer stays visible in
+        // the log instead of getting buried under a 1 Hz reconnect-spam loop.
+        // Owner can cycle power / reset to retry. signaling_disconnect /
+        // app_webrtc_stop() can still cut us out via the socket (recv
+        // callback hits < 0 path), so this isn't a hard hang.
+        for (;;) {
+            vTaskDelay(pdMS_TO_TICKS(60000));
+        }
     }
+    printf("[webrtc] signaling_wait_for_offer: error\n");
 
     signaling_disconnect(sig);
 

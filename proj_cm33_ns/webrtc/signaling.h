@@ -18,8 +18,12 @@ typedef struct SignalingCtx *SignalingHandle;
  * out_endpoint capacity: ~256 chars is plenty (KVS hostnames are short). */
 int signaling_resolve_endpoint(const AwsCreds *creds, char *out_endpoint, size_t cap);
 
-/* Build the signed wss:// URL for ConnectAsViewer. */
-int signaling_build_signed_viewer_url(
+/* Build the signed wss:// URL for ConnectAsMaster.
+ *
+ * KVS role naming gotcha: a camera streaming video to a browser is the
+ * MASTER (sits on the channel, waits for viewers). The role names describe
+ * signaling-channel topology, not media direction. */
+int signaling_build_signed_url(
     const AwsCreds *creds,
     const char *wss_endpoint,
     char *out_url,

@@ -7,10 +7,14 @@
  * Signaling layer.
  *
  * Step 5a (GetSignalingChannelEndpoint, REST), Step 5b URL signing
- * (signaling_build_signed_viewer_url) and the WSS upgrade handshake
- * (signaling_connect / signaling_disconnect) are implemented. WS frame
- * exchange (wait_for_offer / send_answer) is still stubbed — wslay glue
- * is the next session.
+ * (signaling_build_signed_url) and the WSS upgrade + wslay event-loop glue
+ * (signaling_connect / signaling_wait_for_offer / signaling_disconnect) are
+ * implemented. signaling_send_answer is still a stub — JSON envelope wrap
+ * is the next increment.
+ *
+ * KVS role: we connect as MASTER. Role names describe the signaling-channel
+ * topology, not media direction — a camera streaming video out is the master
+ * (sits and waits for browser "viewers" to publish offers).
  *
  * GetSignalingChannelEndpoint flow:
  *   1. Signaling_ConstructGetSignalingChannelEndpointRequest  — builds URL + body
@@ -18,7 +22,7 @@
  *   3. iotconnect_https_request_with_opts                    — POST, returns JSON
  *   4. Signaling_ParseGetSignalingChannelEndpointResponse    — extracts WSS endpoint
  *
- * ConnectAsViewer URL-signing flow (signaling_build_signed_viewer_url):
+ * ConnectAsMaster URL-signing flow (signaling_build_signed_url):
  *   1. Signaling_ConstructConnectWssEndpointRequest  — builds the unsigned base URL
  *   2. Build canonical query string with X-Amz-* params (URI-encoded, lex-sorted)
  *   3. SigV4_GenerateHTTPAuthorization                — signs the canonical request
@@ -58,8 +62,8 @@
 
 // Full URL from the Signaling lib.
 // 5a (HTTPS): "https://kinesisvideo.<region>.amazonaws.com/..." — ~80 chars.
-// 5b base URL (WSS): "wss://<host>?X-Amz-ChannelARN=<arn>&X-Amz-ClientId=<id>"
-// Host ~50, ARN ~110, client_id up to ~64 → up to ~280. 384 leaves comfortable room.
+// 5b base URL (WSS, master): "wss://<host>?X-Amz-ChannelARN=<arn>"
+// Host ~50, ARN ~110 → up to ~200. 384 leaves comfortable room.
 #define SIG_URL_BUF         384
 
 // JSON body for GetSignalingChannelEndpoint — ARN + protocol/role fields.
@@ -142,7 +146,12 @@ int signaling_resolve_endpoint(const AwsCreds *creds, char *out_endpoint, size_t
             .channelArnLength = strlen(creds->channel_arn),
         },
         .protocols = SIGNALING_PROTOCOL_WEBSOCKET_SECURE,
-        .role      = SIGNALING_ROLE_VIEWER,
+        // We're the on-channel endpoint, sitting and waiting for browsers
+        // (KVS "viewers") to publish offers. The role names describe the
+        // signaling-channel topology, not the media direction — a camera
+        // streaming video out is still the MASTER. See PILOT.md §3.1
+        // 2026-05-06 entry for the full breakdown.
+        .role      = SIGNALING_ROLE_MASTER,
     };
     SignalingRequest_t sig_req = {
         .pUrl       = s_url_buf,
@@ -358,17 +367,13 @@ static const char *strip_scheme(const char *url) {
     return (NULL == p) ? url : (p + 3);
 }
 
-int signaling_build_signed_viewer_url(
+int signaling_build_signed_url(
     const AwsCreds *creds,
     const char *wss_endpoint,
     char *out_url,
     size_t cap
 ) {
     if (NULL == creds || NULL == wss_endpoint || NULL == out_url || 0 == cap) {
-        return -1;
-    }
-    if (NULL == creds->client_id || '\0' == creds->client_id[0]) {
-        printf("[signaling] missing client_id for X-Amz-ClientId\n");
         return -1;
     }
     if (NULL == creds->session_token) {
@@ -389,9 +394,12 @@ int signaling_build_signed_viewer_url(
             .pChannelArn      = creds->channel_arn,
             .channelArnLength = strlen(creds->channel_arn),
         },
-        .role           = SIGNALING_ROLE_VIEWER,
-        .pClientId      = creds->client_id,
-        .clientIdLength = strlen(creds->client_id),
+        // MASTER doesn't take an X-Amz-ClientId — KVS uses ClientId only to
+        // disambiguate among the up-to-10 simultaneous viewers per channel.
+        // There's exactly one master, identified by the channel ARN.
+        .role           = SIGNALING_ROLE_MASTER,
+        .pClientId      = NULL,
+        .clientIdLength = 0,
     };
     SignalingRequest_t sig_req = {
         .pUrl       = s_url_buf,
@@ -408,9 +416,9 @@ int signaling_build_signed_viewer_url(
     }
 
     // 2. Pull the bare host (no scheme) from the base URL. The lib output is
-    //    "wss://<host>?X-Amz-ChannelARN=...&X-Amz-ClientId=..." — the host is
-    //    everything between "://" and '?'. We need it for the SigV4 host header
-    //    *and* for the final "wss://<host>/?<query>" composition.
+    //    "wss://<host>?X-Amz-ChannelARN=..." — the host is everything between
+    //    "://" and '?'. We need it for the SigV4 host header *and* for the
+    //    final "wss://<host>/?<query>" composition.
     const char *host_start = strip_scheme(s_url_buf);
     const char *host_end   = strchr(host_start, '?');
     if (NULL == host_end) {
@@ -432,8 +440,9 @@ int signaling_build_signed_viewer_url(
     //    For now write the query bytes starting at out_url + 0; we shift them
     //    later to make room for the prefix. Cleaner than a separate buffer.
     //    Order is lex-sorted (SigV4 requirement when QUERY_IS_CANONICAL is set):
-    //      X-Amz-Algorithm, X-Amz-ChannelARN, X-Amz-ClientId, X-Amz-Credential,
-    //      X-Amz-Date, X-Amz-Expires, X-Amz-Security-Token, X-Amz-SignedHeaders.
+    //      X-Amz-Algorithm, X-Amz-ChannelARN, X-Amz-Credential, X-Amz-Date,
+    //      X-Amz-Expires, X-Amz-Security-Token, X-Amz-SignedHeaders.
+    //    (No X-Amz-ClientId — MASTER role doesn't take one.)
     char *q_cur = out_url;
     size_t q_remain = cap;
 
@@ -441,9 +450,6 @@ int signaling_build_signed_viewer_url(
 
     if (0 != append_literal(&q_cur, &q_remain, "&X-Amz-ChannelARN=")) goto buf_too_small;
     if (0 != append_uri_encoded(&q_cur, &q_remain, creds->channel_arn, strlen(creds->channel_arn))) goto enc_fail;
-
-    if (0 != append_literal(&q_cur, &q_remain, "&X-Amz-ClientId=")) goto buf_too_small;
-    if (0 != append_uri_encoded(&q_cur, &q_remain, creds->client_id, strlen(creds->client_id))) goto enc_fail;
 
     // X-Amz-Credential = "<AKID>/<YYYYMMDD>/<region>/kinesisvideo/aws4_request"
     if (0 != append_literal(&q_cur, &q_remain, "&X-Amz-Credential=")) goto buf_too_small;
@@ -570,7 +576,7 @@ int signaling_build_signed_viewer_url(
     out_url[6 + host_len + 1] = '?';
     out_url[prefix_len + query_len] = '\0';
 
-    printf("[signaling] presigned viewer URL ready (%d bytes)\n", (int)(prefix_len + query_len));
+    printf("[signaling] presigned master URL ready (%d bytes)\n", (int)(prefix_len + query_len));
     return 0;
 
 buf_too_small:
@@ -612,13 +618,6 @@ enc_fail:
 #define WSS_SOCK_RECV_TIMEOUT_MS    200U
 #define WSS_HANDSHAKE_BUDGET_MS     5000U
 
-// Wall-clock budget for one signaling_wait_for_offer call. KVS viewer sessions
-// are master-initiated, so we expect to sit idle most of the time; the budget
-// here is just "how long does one call hold the caller before returning idle".
-// Owner cadence for Increment B: prove the event loop runs cleanly across a
-// few of these idle rotations. 10 s is short enough to keep run_session()
-// responsive to creds_dirty / shutdown checks.
-#define WSS_OFFER_WAIT_BUDGET_MS    10000U
 
 // Fixed overhead in the upgrade request: method/version/literal headers/CRLFs.
 // "GET  HTTP/1.1\r\n" + Host: \r\n + Upgrade: websocket\r\n + Connection: Upgrade\r\n
@@ -1067,12 +1066,16 @@ void signaling_disconnect(SignalingHandle sig) {
     sig->connected = false;
 }
 
-// Drive the wslay event loop until either a non-control message lands (latched
-// by wslay_on_msg_recv_cb) or budget_ms elapses. Returns 0 on message, 1 on
-// idle timeout (no error — caller may retry), -1 on transport / protocol error.
+// Drive the wslay event loop until a non-control message arrives, the peer
+// closes, or the socket dies. Returns 0 on message (with *out_offer set), -1
+// on transport / protocol error or remote close.
 //
-// The current owner cadence for Increment B is "loop runs without faulting" —
-// receiving an actual SDP offer is master-initiated and not part of the gate.
+// No wall-clock budget — we're MASTER and may idle indefinitely waiting for
+// a viewer (browser) to publish. The recv callback's
+// per-call socket timeout (WSS_SOCK_RECV_TIMEOUT_MS) keeps the loop
+// cooperative; shutdown from app_webrtc_stop() cuts the socket, which the
+// recv callback observes as < 0 and propagates as transport_error.
+//
 // The TODO past this point is parsing the JSON envelope (messageType /
 // messagePayload, base64-decoded) into a real SDP offer string.
 int signaling_wait_for_offer(SignalingHandle sig, const char **out_offer) {
@@ -1087,41 +1090,45 @@ int signaling_wait_for_offer(SignalingHandle sig, const char **out_offer) {
     sig->latched_msg = NULL;
     sig->latched_msg_len = 0;
 
-    const TickType_t budget = pdMS_TO_TICKS(WSS_OFFER_WAIT_BUDGET_MS);
-    TickType_t start = xTaskGetTickCount();
-
-    while ((xTaskGetTickCount() - start) < budget) {
+    for (;;) {
         // Send any queued frames first (close, pong, future messages).
         if (wslay_event_want_write(sig->ws_ctx)) {
             int wrc = wslay_event_send(sig->ws_ctx);
-            if (0 != wrc) {
+            if (0 != wrc && NULL == sig->latched_msg) {
                 printf("[signaling] wslay_event_send: %d\n", wrc);
                 return -1;
             }
         }
 
+        int recv_err = 0;
         if (wslay_event_want_read(sig->ws_ctx)) {
-            int wrc = wslay_event_recv(sig->ws_ctx);
-            if (0 != wrc) {
-                printf("[signaling] wslay_event_recv: %d\n", wrc);
-                return -1;
-            }
-        } else {
-            // Read side disabled (close received / shutdown_read called) and
-            // nothing left to write — connection is effectively done.
-            if (!wslay_event_want_write(sig->ws_ctx)) {
-                printf("[signaling] WS read+write both disabled; closing\n");
-                return -1;
-            }
+            recv_err = wslay_event_recv(sig->ws_ctx);
+        }
+
+        // The on_msg_recv callback fires synchronously inside wslay_event_recv,
+        // so a message may have been latched on this same iteration even if
+        // recv subsequently saw a socket close. Always check latched_msg before
+        // treating an error as fatal — the message is the goal, the socket
+        // staying open past it is not.
+        if (NULL != sig->latched_msg) {
+            *out_offer = sig->latched_msg;
+            return 0;
+        }
+
+        if (0 != recv_err) {
+            printf("[signaling] wslay_event_recv: %d\n", recv_err);
+            return -1;
         }
 
         if (sig->transport_error) {
             return -1;
         }
 
-        if (NULL != sig->latched_msg) {
-            *out_offer = sig->latched_msg;
-            return 0;
+        if (!wslay_event_want_read(sig->ws_ctx) && !wslay_event_want_write(sig->ws_ctx)) {
+            // Read+write both disabled (close received / shutdown), nothing
+            // left to do.
+            printf("[signaling] WS read+write both disabled; closing\n");
+            return -1;
         }
 
         // Yield. The recv callback already blocks up to WSS_SOCK_RECV_TIMEOUT_MS,
@@ -1129,8 +1136,6 @@ int signaling_wait_for_offer(SignalingHandle sig, const char **out_offer) {
         // so a small extra yield keeps this loop cooperative.
         vTaskDelay(pdMS_TO_TICKS(20));
     }
-
-    return 1;  // idle timeout
 }
 
 int signaling_send_answer(SignalingHandle sig, const char *sdp_answer) {
