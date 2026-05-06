@@ -34,6 +34,12 @@
 // AWS region codes are bounded at 50 characters by API constraint.
 #define APP_WEBRTC_AWS_REGION_MAXLEN 50
 
+// SDP buffer for the offer-side base64 decode. The first hardware-verified
+// browser offer was 365 envelope bytes (~270 bytes of SDP). Real offers with
+// codecs / RTX / fingerprint lines run 1.5–4 KB; 4 KB covers them with
+// headroom while keeping heap pressure manageable (PILOT §6).
+#define APP_WEBRTC_SDP_BUF_LEN     (4U * 1024U)
+
 
 #define APP_WEBRTC_TASK_NAME       ("CM33 WebRTC")
 #define APP_WEBRTC_TASK_STACK      (8U * 1024U)
@@ -190,33 +196,46 @@ static int run_session(void) {
 
     printf("[webrtc] WS connection established, waiting for offer...\n");
 
+    char *offer_sdp = malloc(APP_WEBRTC_SDP_BUF_LEN);
+    if (NULL == offer_sdp) {
+        printf("[webrtc] OOM for SDP buffer (%u bytes)\n", (unsigned) APP_WEBRTC_SDP_BUF_LEN);
+        signaling_disconnect(sig);
+        return -1;
+    }
+
     // Block until a viewer (browser) publishes an offer or the socket dies.
     // We're MASTER on this channel and may idle indefinitely waiting for a
-    // viewer to show up; any non-zero rc is fatal (transport error, peer
-    // close) and falls through to disconnect.
-    const char *offer = NULL;
-    int wait_rc = signaling_wait_for_offer(sig, &offer);
+    // viewer to show up.
+    size_t offer_len = 0;
+    int wait_rc = signaling_wait_for_offer(sig, offer_sdp, APP_WEBRTC_SDP_BUF_LEN, &offer_len);
     if (0 == wait_rc) {
-        printf("[webrtc] WS offer received (%u bytes) — parsing TBD\n",
-               (unsigned)(NULL != offer ? strlen(offer) : 0));
-        // TBD: parse JSON envelope (messageType / messagePayload, base64) →
-        // SDP_OFFER → ICE → DTLS → SRTP keying → ring consumer start.
-        // Until Increment C+ lands, hold here so the offer stays visible in
-        // the log instead of getting buried under a 1 Hz reconnect-spam loop.
-        // Owner can cycle power / reset to retry. signaling_disconnect /
-        // app_webrtc_stop() can still cut us out via the socket (recv
-        // callback hits < 0 path), so this isn't a hard hang.
-        for (;;) {
-            vTaskDelay(pdMS_TO_TICKS(60000));
-        }
-    }
-    printf("[webrtc] signaling_wait_for_offer: error\n");
+        printf("[webrtc] WS offer received (%u bytes of SDP)\n", (unsigned) offer_len);
 
+        // Stub SDP_ANSWER for Increment C: prove the envelope round trip.
+        // Real SDP arrives with Increment D when DTLS keying is wired and we
+        // can fill in fingerprint, ufrag/pwd, and candidate lines. Keep the
+        // body short — KVS won't accept it as a working answer either way,
+        // and the success criterion here is "browser sees something arrive."
+        static const char stub_answer[] =
+            "v=0\r\n"
+            "o=- 0 0 IN IP4 0.0.0.0\r\n"
+            "s=-\r\n"
+            "t=0 0\r\n";
+        int send_rc = signaling_send_answer(sig, stub_answer);
+        if (0 != send_rc) {
+            printf("[webrtc] signaling_send_answer failed rc=%d\n", send_rc);
+        }
+        // Fall through to disconnect either way. Real ICE / DTLS / SRTP / media
+        // work continues in Increment D+; for today the round trip is the gate.
+    } else {
+        printf("[webrtc] signaling_wait_for_offer: error\n");
+    }
+
+    free(offer_sdp);
     signaling_disconnect(sig);
 
-    // Protocol implementation (offer parse / answer send / ICE / DTLS / media)
-    // continues in subsequent sessions. Always return -1 so run_session is
-    // re-entered after the backoff.
+    // Always return -1 today — even on the happy round-trip the session has no
+    // media path, so run_session must be re-entered after the backoff.
     return -1;
 
 cleanup:
@@ -241,13 +260,12 @@ static void webrtc_task(void *arg) {
         }
 
         int rc = run_session();
-        if (0 != rc) {
-            printf("[webrtc] session ended rc=%d, backing off %u ms\n", rc, (unsigned) APP_WEBRTC_BACKOFF_MS);
-        }
-
-        // Backoff loop yields promptly on stop request.
-        for (uint32_t waited = 0; waited < APP_WEBRTC_BACKOFF_MS && webrtc_running; waited += APP_WEBRTC_POLL_IDLE_MS) {
-            vTaskDelay(pdMS_TO_TICKS(APP_WEBRTC_POLL_IDLE_MS));
+        printf("[webrtc] session ended rc=%d — parking task (Increment C diagnostic)\n", rc);
+        // TEMP (Increment C bring-up): one session per boot so the log isn't
+        // buried under reconnect spam. Restore the back-off-and-retry loop
+        // once Increment C is verified.
+        for (;;) {
+            vTaskDelay(pdMS_TO_TICKS(60000));
         }
     }
 }

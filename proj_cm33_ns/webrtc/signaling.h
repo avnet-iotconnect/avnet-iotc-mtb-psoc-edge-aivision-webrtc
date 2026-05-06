@@ -34,12 +34,18 @@ int signaling_build_signed_url(
 SignalingHandle signaling_connect(const char *signed_url);
 void signaling_disconnect(SignalingHandle sig);
 
-/* Block until the SDP offer arrives from master (or timeout / error).
- * The pointer returned via *out_offer is owned by the signaling layer
- * and stays valid until the next signaling call on the same handle. */
-int signaling_wait_for_offer(SignalingHandle sig, const char **out_offer);
+/* Block until a viewer publishes an SDP offer (or the socket dies). On
+ * success returns 0, writes the decoded SDP into out_sdp (null-terminated),
+ * and latches the viewer's senderClientId on the handle so the matching
+ * signaling_send_answer routes the reply back to the right viewer. Returns
+ * -1 on transport error, peer close, malformed envelope, or non-SDP_OFFER
+ * message (ICE_CANDIDATE / GO_AWAY / etc. land here later). */
+int signaling_wait_for_offer(SignalingHandle sig, char *out_sdp, size_t out_sdp_cap, size_t *out_sdp_len);
 
-/* Send our SDP answer back to master. */
+/* Wrap an SDP answer in the KVS WSS send envelope (action=SDP_ANSWER,
+ * RecipientClientId=latched senderClientId, MessagePayload=base64(sdp))
+ * and push it through wslay. Drains wslay_event_send before returning so
+ * the caller can observe send errors. */
 int signaling_send_answer(SignalingHandle sig, const char *sdp_answer);
 
 #endif /* WEBRTC_SIGNALING_H_ */

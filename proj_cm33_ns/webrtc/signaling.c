@@ -630,21 +630,36 @@ enc_fail:
 #define WSS_RESP_BUF_LEN            1024
 
 
-// Bumps to non-zero whenever the wslay recv-callback observes a hard error on
-// the underlying socket (return < 0). signaling_wait_for_offer treats this as
-// fatal; everything else (timeout, no message yet) is just "keep polling".
+// KVS senderClientId is uuid-shaped (~36 chars). 64 covers any drift; bigger
+// would be wasted in a struct that lives for the connection lifetime.
+#define SIG_CLIENT_ID_MAX           64
+
+// transport_error bumps to non-zero whenever the wslay recv/send callback
+// observes a hard error on the underlying socket. signaling_wait_for_offer
+// treats this as fatal; everything else (timeout, no message yet) is "keep
+// polling".
+//
+// SDP offer plumbing: KVS bursts several frames (often ICE_CANDIDATE *and*
+// SDP_OFFER) inside one wslay_event_recv call, firing on_msg_recv for each.
+// We dispatch synchronously from on_msg_recv (matching the Ameba/N6 reference
+// pattern) into the caller's SDP buffer, since a single-slot latch silently
+// dropped earlier frames in the burst — typically the SDP_OFFER itself.
 struct SignalingCtx {
     NetworkContext_t net_ctx;
     wslay_event_context_ptr ws_ctx;
     bool connected;
     bool transport_error;
-    // Latched copy of the most recent received text-frame payload. The WS
-    // on_msg_recv callback fires in the middle of wslay_event_recv() with a
-    // buffer owned by the library, so we malloc-copy it into the handle for
-    // the caller of signaling_wait_for_offer. NULL until a frame arrives;
-    // freed on the next wait_for_offer call or in signaling_disconnect.
-    char *latched_msg;
-    size_t latched_msg_len;
+    // Caller's SDP buffer for the in-flight signaling_wait_for_offer call.
+    // Populated by on_msg_recv when an SDP_OFFER envelope arrives; offer_ready
+    // flips true and the wait loop returns. NULL outside of wait_for_offer.
+    char *offer_sdp_buf;
+    size_t offer_sdp_cap;
+    size_t offer_sdp_len;
+    bool offer_ready;
+    // senderClientId of the viewer that sent the latched offer. Consumed by
+    // signaling_send_answer to fill RecipientClientId.
+    char peer_client_id[SIG_CLIENT_ID_MAX];
+    size_t peer_client_id_len;
 };
 
 static struct SignalingCtx g_sig;
@@ -831,6 +846,71 @@ static int wslay_genmask_cb(wslay_event_context_ptr ctx, uint8_t *buf, size_t le
     return 0;
 }
 
+// Dispatch a single inbound text frame. Called from on_msg_recv, possibly
+// multiple times per wslay_event_recv() call when KVS bursts frames. If the
+// envelope is an SDP_OFFER and we don't already have one, decode it into the
+// caller's buffer and flip offer_ready. Anything else is logged and dropped.
+static void dispatch_text_frame(SignalingHandle sig, const uint8_t *msg, size_t msg_len) {
+    WssRecvMessage_t recv = { 0 };
+    SignalingResult_t sig_rc = Signaling_ParseWssRecvMessage((const char *) msg, msg_len, &recv);
+    if (SIGNALING_RESULT_OK != sig_rc) {
+        printf("[signaling] ParseWssRecvMessage failed: %d (len=%u)\n",
+               (int) sig_rc, (unsigned) msg_len);
+        return;
+    }
+
+    if (SIGNALING_TYPE_MESSAGE_SDP_OFFER != recv.messageType) {
+        // Trickle ICE / status / go-away — drop silently for Increment C.
+        // Increment D+ will route ICE_CANDIDATE into the ICE controller.
+        printf("[signaling] dropping non-SDP_OFFER (messageType=%d, %u bytes)\n",
+               (int) recv.messageType, (unsigned) msg_len);
+        return;
+    }
+
+    if (sig->offer_ready) {
+        // Already captured an offer this wait_for_offer cycle. KVS shouldn't
+        // re-send SDP_OFFER mid-handshake but log if it does.
+        printf("[signaling] duplicate SDP_OFFER, dropping (%u bytes)\n", (unsigned) msg_len);
+        return;
+    }
+
+    if (NULL == recv.pBase64EncodedPayload || 0 == recv.base64EncodedPayloadLength) {
+        printf("[signaling] SDP_OFFER missing messagePayload\n");
+        return;
+    }
+    if (NULL == sig->offer_sdp_buf || sig->offer_sdp_cap < 2) {
+        // Caller never set up a buffer (frame arrived outside wait_for_offer);
+        // shouldn't happen since we tear down g_sig.ws_ctx in disconnect.
+        printf("[signaling] SDP_OFFER arrived without an active buffer\n");
+        return;
+    }
+
+    if (recv.senderClientIdLength >= sizeof(sig->peer_client_id)) {
+        printf("[signaling] senderClientId too long (%u >= %u)\n",
+               (unsigned) recv.senderClientIdLength, (unsigned) sizeof(sig->peer_client_id));
+        return;
+    }
+    if (recv.senderClientIdLength > 0) {
+        memcpy(sig->peer_client_id, recv.pSenderClientId, recv.senderClientIdLength);
+    }
+    sig->peer_client_id[recv.senderClientIdLength] = '\0';
+    sig->peer_client_id_len = recv.senderClientIdLength;
+
+    size_t decoded_len = 0;
+    int b64_rc = mbedtls_base64_decode(
+        (unsigned char *) sig->offer_sdp_buf, sig->offer_sdp_cap - 1, &decoded_len,
+        (const unsigned char *) recv.pBase64EncodedPayload,
+        recv.base64EncodedPayloadLength
+    );
+    if (0 != b64_rc) {
+        printf("[signaling] base64 decode of SDP_OFFER payload failed: -0x%04x\n", -b64_rc);
+        return;
+    }
+    sig->offer_sdp_buf[decoded_len] = '\0';
+    sig->offer_sdp_len = decoded_len;
+    sig->offer_ready = true;
+}
+
 static void wslay_on_msg_recv_cb(wslay_event_context_ptr ctx,
                                  const struct wslay_event_on_msg_recv_arg *arg,
                                  void *user_data) {
@@ -846,23 +926,13 @@ static void wslay_on_msg_recv_cb(wslay_event_context_ptr ctx,
         return;
     }
 
-    // Replace any prior un-consumed message — KVS sends one envelope per text
-    // frame, and signaling_wait_for_offer is expected to drain promptly.
-    free(sig->latched_msg);
-    sig->latched_msg = NULL;
-    sig->latched_msg_len = 0;
-
-    char *copy = malloc(arg->msg_length + 1);
-    if (NULL == copy) {
-        printf("[signaling] WS msg: OOM (%u bytes)\n", (unsigned) arg->msg_length);
-        return;
-    }
-    memcpy(copy, arg->msg, arg->msg_length);
-    copy[arg->msg_length] = '\0';
-    sig->latched_msg = copy;
-    sig->latched_msg_len = arg->msg_length;
     printf("[signaling] WS msg: opcode=0x%x len=%u\n",
            (unsigned) arg->opcode, (unsigned) arg->msg_length);
+    // TEMP (Increment C diagnostic): dump the raw envelope so we can see
+    // exactly what KVS routed to the master. Remove once SDP_OFFER round
+    // trip is verified.
+    printf("[signaling] WS raw: %.*s\n", (int) arg->msg_length, (const char *) arg->msg);
+    dispatch_text_frame(sig, arg->msg, arg->msg_length);
 }
 
 static const struct wslay_event_callbacks g_wslay_cbs = {
@@ -945,12 +1015,23 @@ SignalingHandle signaling_connect(const char *signed_url) {
         free(host);
         return NULL;
     }
+    // Header set mirrors the working KVS reference (Ameba wslay_helper):
+    // Pragma + Cache-Control + Sec-WebSocket-Protocol all matter to AWS even
+    // though only Upgrade/Connection/Key/Version are RFC 6455 mandatory. With
+    // these headers absent AWS forwards ICE_CANDIDATE messages to the master
+    // but holds back SDP_OFFER (observed empirically — see PILOT.md §3.1
+    // 2026-05-06 entry). Sec-WebSocket-Protocol value "wss" is non-standard
+    // (RFC 6455 wants subprotocol names, not URL schemes) but matches what
+    // every working KVS-WebRTC port sends.
     int req_len = snprintf(req, req_cap,
         "GET %s HTTP/1.1\r\n"
         "Host: %s\r\n"
+        "Pragma: no-cache\r\n"
+        "Cache-Control: no-cache\r\n"
         "Upgrade: websocket\r\n"
         "Connection: Upgrade\r\n"
         "Sec-WebSocket-Key: %s\r\n"
+        "Sec-WebSocket-Protocol: wss\r\n"
         "Sec-WebSocket-Version: 13\r\n"
         "\r\n",
         path, host, nonce_b64
@@ -1044,8 +1125,12 @@ SignalingHandle signaling_connect(const char *signed_url) {
 
     g_sig.connected = true;
     g_sig.transport_error = false;
-    g_sig.latched_msg = NULL;
-    g_sig.latched_msg_len = 0;
+    g_sig.offer_sdp_buf = NULL;
+    g_sig.offer_sdp_cap = 0;
+    g_sig.offer_sdp_len = 0;
+    g_sig.offer_ready = false;
+    g_sig.peer_client_id[0] = '\0';
+    g_sig.peer_client_id_len = 0;
     printf("[signaling] WS upgrade OK (101 Switching Protocols)\n");
     return &g_sig;
 }
@@ -1058,77 +1143,111 @@ void signaling_disconnect(SignalingHandle sig) {
         wslay_event_context_free(sig->ws_ctx);
         sig->ws_ctx = NULL;
     }
-    free(sig->latched_msg);
-    sig->latched_msg = NULL;
-    sig->latched_msg_len = 0;
+    sig->offer_sdp_buf = NULL;
+    sig->offer_sdp_cap = 0;
+    sig->offer_sdp_len = 0;
+    sig->offer_ready = false;
     cy_awsport_network_disconnect(&sig->net_ctx);
     cy_awsport_network_delete(&sig->net_ctx);
     sig->connected = false;
 }
 
-// Drive the wslay event loop until a non-control message arrives, the peer
-// closes, or the socket dies. Returns 0 on message (with *out_offer set), -1
-// on transport / protocol error or remote close.
+// -------------------------------------------------------------------------
+// Step 5b Increment C — JSON envelope wrap/unwrap (messageType / messagePayload)
+// -------------------------------------------------------------------------
+//
+// Receive shape (KVS docs, lowercase keys):
+//   { "senderClientId":"<uuid>", "messageType":"SDP_OFFER",
+//     "messagePayload":"<base64-encoded SDP>" }
+//
+// Send shape (KVS docs, mixed-case keys with "action"):
+//   { "action":"SDP_ANSWER", "RecipientClientId":"<uuid>",
+//     "MessagePayload":"<base64-encoded SDP>" }
+//
+// The upstream signaling lib (Signaling_ParseWssRecvMessage /
+// Signaling_ConstructWssMessage) handles the JSON shape on both sides; we
+// own the base64 step on either side and the wslay queue/drive on send.
+
+// Drive the wslay event loop until on_msg_recv flips offer_ready, the peer
+// closes, or the socket dies. On success returns 0 with out_sdp populated
+// (filled inline by dispatch_text_frame) and senderClientId latched on the
+// handle.
 //
 // No wall-clock budget — we're MASTER and may idle indefinitely waiting for
-// a viewer (browser) to publish. The recv callback's
-// per-call socket timeout (WSS_SOCK_RECV_TIMEOUT_MS) keeps the loop
-// cooperative; shutdown from app_webrtc_stop() cuts the socket, which the
-// recv callback observes as < 0 and propagates as transport_error.
-//
-// The TODO past this point is parsing the JSON envelope (messageType /
-// messagePayload, base64-decoded) into a real SDP offer string.
-int signaling_wait_for_offer(SignalingHandle sig, const char **out_offer) {
-    if (NULL == sig || NULL == out_offer || !sig->connected || NULL == sig->ws_ctx) {
+// a viewer (browser) to publish. The recv callback's per-call socket timeout
+// (WSS_SOCK_RECV_TIMEOUT_MS) keeps the loop cooperative; shutdown from
+// app_webrtc_stop() cuts the socket, which the recv callback observes as < 0
+// and propagates as transport_error.
+int signaling_wait_for_offer(SignalingHandle sig, char *out_sdp, size_t out_sdp_cap, size_t *out_sdp_len) {
+    if (NULL == sig || NULL == out_sdp || out_sdp_cap < 2 || NULL == out_sdp_len
+        || !sig->connected || NULL == sig->ws_ctx) {
         return -1;
     }
-    *out_offer = NULL;
+    *out_sdp_len = 0;
 
-    // Free any prior un-consumed latched message before we start polling — the
-    // caller has had its chance to read the previous one.
-    free(sig->latched_msg);
-    sig->latched_msg = NULL;
-    sig->latched_msg_len = 0;
+    // Park the caller's buffer where dispatch_text_frame can find it. Cleared
+    // before we return so a stale pointer can't survive between sessions.
+    sig->offer_sdp_buf = out_sdp;
+    sig->offer_sdp_cap = out_sdp_cap;
+    sig->offer_sdp_len = 0;
+    sig->offer_ready = false;
 
+    int rc;
+    // TEMP (Increment C diagnostic): count how many wslay_event_recv calls
+    // happen before the socket dies. 1 means AWS closed inside the same call
+    // that delivered the frame (no opportunity for us to provoke the close);
+    // ≥2 means we may have sent something (e.g., a wslay-queued close frame)
+    // between recvs. Remove once Increment C is verified.
+    unsigned recv_calls = 0;
     for (;;) {
         // Send any queued frames first (close, pong, future messages).
-        if (wslay_event_want_write(sig->ws_ctx)) {
+        bool ww_before = wslay_event_want_write(sig->ws_ctx);
+        if (ww_before) {
             int wrc = wslay_event_send(sig->ws_ctx);
-            if (0 != wrc && NULL == sig->latched_msg) {
+            if (0 != wrc && !sig->offer_ready) {
                 printf("[signaling] wslay_event_send: %d\n", wrc);
-                return -1;
+                rc = -1;
+                goto out;
             }
+            // TEMP (Increment C diagnostic): a queued send before recv often
+            // means wslay's about to close on us (close frames are queued
+            // implicitly on protocol issues). Loud so it's visible in triage.
+            printf("[signaling] tx flushed (want_write was set)\n");
         }
 
         int recv_err = 0;
         if (wslay_event_want_read(sig->ws_ctx)) {
+            recv_calls++;
             recv_err = wslay_event_recv(sig->ws_ctx);
         }
 
-        // The on_msg_recv callback fires synchronously inside wslay_event_recv,
-        // so a message may have been latched on this same iteration even if
-        // recv subsequently saw a socket close. Always check latched_msg before
-        // treating an error as fatal — the message is the goal, the socket
-        // staying open past it is not.
-        if (NULL != sig->latched_msg) {
-            *out_offer = sig->latched_msg;
-            return 0;
+        // dispatch_text_frame fires synchronously inside wslay_event_recv,
+        // potentially multiple times per call when KVS bursts frames. Check
+        // offer_ready before treating an error as fatal — once we have the
+        // offer the socket close that often follows is irrelevant.
+        if (sig->offer_ready) {
+            *out_sdp_len = sig->offer_sdp_len;
+            rc = 0;
+            goto out;
         }
 
         if (0 != recv_err) {
             printf("[signaling] wslay_event_recv: %d\n", recv_err);
-            return -1;
+            rc = -1;
+            goto out;
         }
 
         if (sig->transport_error) {
-            return -1;
+            rc = -1;
+            goto out;
         }
 
         if (!wslay_event_want_read(sig->ws_ctx) && !wslay_event_want_write(sig->ws_ctx)) {
             // Read+write both disabled (close received / shutdown), nothing
             // left to do.
             printf("[signaling] WS read+write both disabled; closing\n");
-            return -1;
+            rc = -1;
+            goto out;
         }
 
         // Yield. The recv callback already blocks up to WSS_SOCK_RECV_TIMEOUT_MS,
@@ -1136,11 +1255,107 @@ int signaling_wait_for_offer(SignalingHandle sig, const char **out_offer) {
         // so a small extra yield keeps this loop cooperative.
         vTaskDelay(pdMS_TO_TICKS(20));
     }
+
+out:
+    // TEMP (Increment C diagnostic): see comment at recv_calls declaration.
+    printf("[signaling] wait_for_offer exit: rc=%d recv_calls=%u offer_ready=%d\n",
+           rc, recv_calls, (int) sig->offer_ready);
+    // Drop the parked buffer — it's only valid for the duration of this call.
+    sig->offer_sdp_buf = NULL;
+    sig->offer_sdp_cap = 0;
+    return rc;
 }
 
 int signaling_send_answer(SignalingHandle sig, const char *sdp_answer) {
-    (void) sig;
-    (void) sdp_answer;
-    printf("[signaling] signaling_send_answer: STUB\n");
-    return -1;
+    if (NULL == sig || NULL == sdp_answer || !sig->connected || NULL == sig->ws_ctx) {
+        return -1;
+    }
+    if (sig->transport_error) {
+        printf("[signaling] send_answer: transport already in error\n");
+        return -1;
+    }
+
+    size_t sdp_len = strlen(sdp_answer);
+
+    // Base64-encode the SDP. Output size is deterministic: ceil(n/3)*4, plus
+    // mbedTLS uses one extra byte for an internal null terminator in dlen.
+    size_t b64_cap = 4 * ((sdp_len + 2) / 3) + 1;
+    char *b64_buf = malloc(b64_cap);
+    if (NULL == b64_buf) {
+        printf("[signaling] OOM for base64 buffer (%u bytes)\n", (unsigned) b64_cap);
+        return -1;
+    }
+    size_t b64_len = 0;
+    int b64_rc = mbedtls_base64_encode((unsigned char *) b64_buf, b64_cap, &b64_len,
+                                       (const unsigned char *) sdp_answer, sdp_len);
+    if (0 != b64_rc) {
+        printf("[signaling] base64 encode failed: -0x%04x\n", -b64_rc);
+        free(b64_buf);
+        return -1;
+    }
+
+    // Wrap in the KVS WSS send envelope. JSON skeleton (action/keys/braces/
+    // quotes/commas) is ~80 bytes; flat 256 leaves headroom for KVS docs drift.
+    size_t env_cap = b64_len + sig->peer_client_id_len + 256;
+    char *env_buf = malloc(env_cap);
+    if (NULL == env_buf) {
+        printf("[signaling] OOM for envelope buffer (%u bytes)\n", (unsigned) env_cap);
+        free(b64_buf);
+        return -1;
+    }
+    WssSendMessage_t send_msg = {
+        .messageType                = SIGNALING_TYPE_MESSAGE_SDP_ANSWER,
+        .pRecipientClientId         = sig->peer_client_id,
+        .recipientClientIdLength    = sig->peer_client_id_len,
+        .pBase64EncodedMessage      = b64_buf,
+        .base64EncodedMessageLength = b64_len,
+        .pCorrelationId             = NULL,
+        .correlationIdLength        = 0,
+    };
+    size_t env_len = env_cap;
+    SignalingResult_t sig_rc = Signaling_ConstructWssMessage(&send_msg, env_buf, &env_len);
+    free(b64_buf);
+    if (SIGNALING_RESULT_OK != sig_rc) {
+        printf("[signaling] ConstructWssMessage failed: %d\n", (int) sig_rc);
+        free(env_buf);
+        return -1;
+    }
+
+    // Queue as a single WS text frame. wslay_event_omsg_non_fragmented_init
+    // mallocs+memcpys the msg, so env_buf is safe to free immediately after.
+    struct wslay_event_msg ws_msg = {
+        .opcode     = WSLAY_TEXT_FRAME,
+        .msg        = (const uint8_t *) env_buf,
+        .msg_length = env_len,
+    };
+    int wrc = wslay_event_queue_msg(sig->ws_ctx, &ws_msg);
+    free(env_buf);
+    if (0 != wrc) {
+        printf("[signaling] wslay_event_queue_msg failed: %d\n", wrc);
+        return -1;
+    }
+
+    // Drive wslay_event_send until the queue drains. Bounded: AWS closes its
+    // end fast if the answer is malformed (Increment C is a stub SDP), and a
+    // wedged TLS write must not block the caller forever.
+    const TickType_t start = xTaskGetTickCount();
+    const TickType_t budget = pdMS_TO_TICKS(2000);
+    while (wslay_event_want_write(sig->ws_ctx)) {
+        wrc = wslay_event_send(sig->ws_ctx);
+        if (0 != wrc) {
+            printf("[signaling] wslay_event_send (answer) failed: %d\n", wrc);
+            return -1;
+        }
+        if (sig->transport_error) {
+            return -1;
+        }
+        if ((xTaskGetTickCount() - start) >= budget) {
+            printf("[signaling] send_answer: drain timed out (>2 s)\n");
+            return -1;
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+
+    printf("[webrtc] WS answer sent (%u envelope bytes)\n", (unsigned) env_len);
+    return 0;
 }

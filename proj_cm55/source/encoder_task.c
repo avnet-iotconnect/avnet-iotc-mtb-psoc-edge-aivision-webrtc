@@ -354,6 +354,7 @@ void cm55_encoder_task(void *arg) {
     float sum_total = 0.0f;
     float t_prev_report = ifx_time_get_ms_f();
 
+    int max_debug_messages = 2;
     for (;;) {
         cy_rslt_t result = cy_rtos_semaphore_get(&encoder_semaphore, 0xFFFFFFFF);
         if (CY_RSLT_SUCCESS != result) {
@@ -403,7 +404,9 @@ void cm55_encoder_task(void *arg) {
         total_bytes += (uint32_t)coded_size;
         frames++;
 
-        if (frames >= 30) {
+        if (frames >= 30 && max_debug_messages > 0) {
+            max_debug_messages--;
+            
             float now = ifx_time_get_ms_f();
             float window = now - t_prev_report;
             float fps = (window > 0.0f) ? (1000.0f * frames / window) : 0.0f;
@@ -411,9 +414,9 @@ void cm55_encoder_task(void *arg) {
             /* Read-and-clear the producer-side counters atomically enough
              * for our purposes -- a fire that lands between these reads
              * is just credited to the next window. */
-            uint32_t hooks = encoder_hook_fires;  encoder_hook_fires = 0;
-            uint32_t inf_done = encoder_inf_done;    encoder_inf_done   = 0;
-            uint32_t dsp_done = encoder_disp_done;   encoder_disp_done  = 0;
+            uint32_t hooks = encoder_hook_fires = 0;
+            uint32_t inf_done = encoder_inf_done = 0;
+            uint32_t dsp_done = encoder_disp_done = 0;
 
             float in_fps = (window > 0.0f) ? (1000.0f * hooks / window) : 0.0f;
             float inf_fps = (window > 0.0f) ? (1000.0f * inf_done / window) : 0.0f;

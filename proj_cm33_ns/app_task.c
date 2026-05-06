@@ -318,6 +318,7 @@ void app_task(void *pvParameters) {
 
     // Smoke-test the AWS creds mTLS flow before connecting MQTT.
     int creds_status = iotconnect_sdk_obtain_aws_creds();
+
     if (0 != creds_status) {
         printf("AWS creds obtain failed (status=%d).\n", creds_status);
     } else {
@@ -333,20 +334,27 @@ void app_task(void *pvParameters) {
         app_webrtc_start();
     }
 
-    for (int i = 0; i < 10; i++) {
+    
+    // NOTE: Temp hack only send 2 mesages to avoid spam but have IoTConnect detect us
+    for (int i = 0; i < 1; i++) {
         ret = iotconnect_sdk_connect();
         if (CY_RSLT_SUCCESS != ret) {
             printf("Failed to initialize the /IOTCONNECT SDK. Error code: %u\n", (unsigned int) ret);
             goto exit_cleanup;
         }
         
-        int max_messages = is_demo_mode ? 6000 : 300;
+        // int max_messages = is_demo_mode ? 6000 : 300;
+        int max_messages = 2;
         for (int j = 0; iotconnect_sdk_is_connected() && j < max_messages; j++) {
             cy_rslt_t result = publish_telemetry();
             if (result != CY_RSLT_SUCCESS) {
                 break;
                 }
             iotconnect_sdk_poll_inbound_mq(reporting_interval);
+        }
+        while (true) {
+             // HACK: Block here for now so we can see WebRTC logsa
+            vTaskDelay(1000);
         }
         iotconnect_sdk_disconnect();
     }
