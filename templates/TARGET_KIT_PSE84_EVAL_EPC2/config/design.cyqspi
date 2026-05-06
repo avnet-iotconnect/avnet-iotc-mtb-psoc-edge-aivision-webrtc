@@ -4,7 +4,7 @@
     <DevicePath>PSE846GPS2DBZC4A</DevicePath>
     <FlashloaderDir>FlashLoaders</FlashloaderDir>
     <FlashloaderProgramChunkSize>4096</FlashloaderProgramChunkSize>
-    <FlashloaderEraseChunkSize>65536</FlashloaderEraseChunkSize>
+    <FlashloaderEraseChunkSize>262144</FlashloaderEraseChunkSize>
     <SlotConfigs>
         <SlotConfig>
             <SlaveSlot>0</SlaveSlot>
@@ -23,16 +23,16 @@
         </SlotConfig>
         <SlotConfig>
             <SlaveSlot>1</SlaveSlot>
-            <MemoryId>S25FS128S (Hybrid at bottom, 64 KB sectors elsewhere)</MemoryId>
+            <MemoryId>S25HS512T (Hybrid at Bottom)</MemoryId>
             <MemoryMapped>true</MemoryMapped>
             <DualQuad>None</DualQuad>
             <StartAddress>0x60000000</StartAddress>
-            <Size>0x1000000</Size>
-            <EndAddress>0x60FFFFFF</EndAddress>
+            <Size>0x4000000</Size>
+            <EndAddress>0x63FFFFFF</EndAddress>
             <WriteEnable>true</WriteEnable>
             <Encrypt>false</Encrypt>
             <DataSelect>QUAD_SPI_DATA_0_3</DataSelect>
-            <MemoryConfigsPath>S25FS128S (Hybrid at bottom, 64 KB sectors elsewhere)</MemoryConfigsPath>
+            <MemoryConfigsPath>S25HS512T (Hybrid at Bottom)</MemoryConfigsPath>
             <ConfigDataInFlash>false</ConfigDataInFlash>
             <MergeTimeout>CY_SMIF_MERGE_TIMEOUT_256_CYCLES</MergeTimeout>
         </SlotConfig>
