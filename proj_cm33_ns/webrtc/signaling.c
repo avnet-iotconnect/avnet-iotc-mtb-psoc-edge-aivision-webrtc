@@ -47,6 +47,8 @@
 #include "cy_tcpip_port_secure_sockets.h"
 #include "transport_interface.h"
 
+#include "wslay/wslay.h"
+
 #include "webrtc/csprng.h"
 #include "webrtc/signaling.h"
 
@@ -598,10 +600,25 @@ enc_fail:
 #define WSS_NONCE_B64_LEN           25  /* base64(16) = 24 + null */
 #define WSS_ACCEPT_B64_LEN          29  /* base64(SHA1=20) = 28 + null */
 
-// Send/receive timeouts for the upgrade handshake (ms). The handshake is a
-// single round-trip — if AWS doesn't respond in 5 s something is wrong.
-#define WSS_HANDSHAKE_SEND_TIMEOUT  5000U
-#define WSS_HANDSHAKE_RECV_TIMEOUT  5000U
+// Per-call socket timeouts (ms). These are set once at cy_awsport_network_connect
+// time and apply to every send/recv after that — the secure-sockets API has no
+// way to retune them later. A short recv timeout is what lets the wslay event
+// loop poll without blocking forever; a 0 from cy_awsport_network_receive maps
+// cleanly to WSLAY_ERR_WOULDBLOCK so the loop can yield and retry.
+//
+// The handshake recv has to gather a multi-part response, so it loops up to
+// WSS_HANDSHAKE_BUDGET_MS of wall-clock time, swallowing per-call timeouts.
+#define WSS_SOCK_SEND_TIMEOUT_MS    2000U
+#define WSS_SOCK_RECV_TIMEOUT_MS    200U
+#define WSS_HANDSHAKE_BUDGET_MS     5000U
+
+// Wall-clock budget for one signaling_wait_for_offer call. KVS viewer sessions
+// are master-initiated, so we expect to sit idle most of the time; the budget
+// here is just "how long does one call hold the caller before returning idle".
+// Owner cadence for Increment B: prove the event loop runs cleanly across a
+// few of these idle rotations. 10 s is short enough to keep run_session()
+// responsive to creds_dirty / shutdown checks.
+#define WSS_OFFER_WAIT_BUDGET_MS    10000U
 
 // Fixed overhead in the upgrade request: method/version/literal headers/CRLFs.
 // "GET  HTTP/1.1\r\n" + Host: \r\n + Upgrade: websocket\r\n + Connection: Upgrade\r\n
@@ -614,9 +631,21 @@ enc_fail:
 #define WSS_RESP_BUF_LEN            1024
 
 
+// Bumps to non-zero whenever the wslay recv-callback observes a hard error on
+// the underlying socket (return < 0). signaling_wait_for_offer treats this as
+// fatal; everything else (timeout, no message yet) is just "keep polling".
 struct SignalingCtx {
     NetworkContext_t net_ctx;
+    wslay_event_context_ptr ws_ctx;
     bool connected;
+    bool transport_error;
+    // Latched copy of the most recent received text-frame payload. The WS
+    // on_msg_recv callback fires in the middle of wslay_event_recv() with a
+    // buffer owned by the library, so we malloc-copy it into the handle for
+    // the caller of signaling_wait_for_offer. NULL until a frame arrives;
+    // freed on the next wait_for_offer call or in signaling_disconnect.
+    char *latched_msg;
+    size_t latched_msg_len;
 };
 
 static struct SignalingCtx g_sig;
@@ -673,23 +702,30 @@ static int wss_compute_accept(const char *client_key_b64, char *out, size_t out_
     return 0;
 }
 
-// Read response head into resp_buf until "\r\n\r\n" or buffer full / timeout.
+// Read response head into resp_buf until "\r\n\r\n" or buffer full / wall-clock
+// budget exceeded. The socket recv timeout is short (so the steady-state event
+// loop can poll), so the handshake has to gather across multiple zero-returns.
 // Returns the number of bytes read on success, -1 on error. The buffer is NOT
 // null-terminated by this function; caller does that using the returned length.
 static int wss_recv_head(NetworkContext_t *net, uint8_t *resp_buf, size_t resp_cap) {
     size_t total = 0;
-    // Look for "\r\n\r\n" — the four-byte head terminator. Since each
-    // cy_awsport_network_receive call returns whatever happened to arrive,
-    // we may need several.
+    TickType_t start = xTaskGetTickCount();
+    const TickType_t budget = pdMS_TO_TICKS(WSS_HANDSHAKE_BUDGET_MS);
+
     while (total < resp_cap) {
+        if ((xTaskGetTickCount() - start) >= budget) {
+            printf("[signaling] WSS upgrade recv timeout (budget %u ms)\n",
+                   (unsigned) WSS_HANDSHAKE_BUDGET_MS);
+            return -1;
+        }
         int32_t n = cy_awsport_network_receive(net, resp_buf + total, resp_cap - total);
         if (n < 0) {
             printf("[signaling] cy_awsport_network_receive failed: %d\n", (int) n);
             return -1;
         }
         if (0 == n) {
-            printf("[signaling] WSS upgrade recv timeout\n");
-            return -1;
+            // Per-call timeout — keep polling until the wall-clock budget runs out.
+            continue;
         }
         total += (size_t) n;
         if (total >= 4) {
@@ -738,6 +774,107 @@ static const char *wss_find_header(const char *resp, size_t resp_len, const char
     }
     return NULL;
 }
+
+// -------------------------------------------------------------------------
+// wslay event callbacks
+// -------------------------------------------------------------------------
+//
+// All four callbacks share a single user_data pointer (a SignalingHandle).
+// Recv/send wrap cy_awsport_network_*; genmask uses our DRBG; on_msg_recv
+// latches the most recent text-frame payload into the handle for
+// signaling_wait_for_offer to pick up.
+
+static ssize_t wslay_recv_cb(wslay_event_context_ptr ctx, uint8_t *buf, size_t len,
+                             int flags, void *user_data) {
+    (void) flags;
+    SignalingHandle sig = (SignalingHandle) user_data;
+    int32_t n = cy_awsport_network_receive(&sig->net_ctx, buf, len);
+    if (n < 0) {
+        sig->transport_error = true;
+        wslay_event_set_error(ctx, WSLAY_ERR_CALLBACK_FAILURE);
+        printf("[signaling] wslay recv: socket error %d\n", (int) n);
+        return -1;
+    }
+    if (0 == n) {
+        // Per-call socket timeout — wslay treats WOULDBLOCK as "stop receiving
+        // for this tick, try again later".
+        wslay_event_set_error(ctx, WSLAY_ERR_WOULDBLOCK);
+        return -1;
+    }
+    return (ssize_t) n;
+}
+
+static ssize_t wslay_send_cb(wslay_event_context_ptr ctx, const uint8_t *data, size_t len,
+                             int flags, void *user_data) {
+    (void) flags;
+    SignalingHandle sig = (SignalingHandle) user_data;
+    int32_t n = cy_awsport_network_send(&sig->net_ctx, data, len);
+    if (n < 0) {
+        sig->transport_error = true;
+        wslay_event_set_error(ctx, WSLAY_ERR_CALLBACK_FAILURE);
+        printf("[signaling] wslay send: socket error %d\n", (int) n);
+        return -1;
+    }
+    if (0 == n) {
+        wslay_event_set_error(ctx, WSLAY_ERR_WOULDBLOCK);
+        return -1;
+    }
+    return (ssize_t) n;
+}
+
+static int wslay_genmask_cb(wslay_event_context_ptr ctx, uint8_t *buf, size_t len,
+                            void *user_data) {
+    (void) ctx;
+    (void) user_data;
+    if (0 != webrtc_csprng_bytes(buf, len)) {
+        return -1;
+    }
+    return 0;
+}
+
+static void wslay_on_msg_recv_cb(wslay_event_context_ptr ctx,
+                                 const struct wslay_event_on_msg_recv_arg *arg,
+                                 void *user_data) {
+    (void) ctx;
+    SignalingHandle sig = (SignalingHandle) user_data;
+
+    if (wslay_is_ctrl_frame(arg->opcode)) {
+        // wslay handles ping/close/pong queueing itself; just log for triage.
+        if (WSLAY_CONNECTION_CLOSE == arg->opcode) {
+            printf("[signaling] WS close (status=%u, len=%u)\n",
+                   (unsigned) arg->status_code, (unsigned) arg->msg_length);
+        }
+        return;
+    }
+
+    // Replace any prior un-consumed message — KVS sends one envelope per text
+    // frame, and signaling_wait_for_offer is expected to drain promptly.
+    free(sig->latched_msg);
+    sig->latched_msg = NULL;
+    sig->latched_msg_len = 0;
+
+    char *copy = malloc(arg->msg_length + 1);
+    if (NULL == copy) {
+        printf("[signaling] WS msg: OOM (%u bytes)\n", (unsigned) arg->msg_length);
+        return;
+    }
+    memcpy(copy, arg->msg, arg->msg_length);
+    copy[arg->msg_length] = '\0';
+    sig->latched_msg = copy;
+    sig->latched_msg_len = arg->msg_length;
+    printf("[signaling] WS msg: opcode=0x%x len=%u\n",
+           (unsigned) arg->opcode, (unsigned) arg->msg_length);
+}
+
+static const struct wslay_event_callbacks g_wslay_cbs = {
+    wslay_recv_cb,
+    wslay_send_cb,
+    wslay_genmask_cb,
+    NULL,                   // on_frame_recv_start
+    NULL,                   // on_frame_recv_chunk
+    NULL,                   // on_frame_recv_end
+    wslay_on_msg_recv_cb,
+};
 
 
 SignalingHandle signaling_connect(const char *signed_url) {
@@ -790,7 +927,7 @@ SignalingHandle signaling_connect(const char *signed_url) {
         free(host);
         return NULL;
     }
-    r = cy_awsport_network_connect(&g_sig.net_ctx, WSS_HANDSHAKE_SEND_TIMEOUT, WSS_HANDSHAKE_RECV_TIMEOUT);
+    r = cy_awsport_network_connect(&g_sig.net_ctx, WSS_SOCK_SEND_TIMEOUT_MS, WSS_SOCK_RECV_TIMEOUT_MS);
     if (CY_RSLT_SUCCESS != r) {
         printf("[signaling] cy_awsport_network_connect failed: 0x%08lx\n", (unsigned long) r);
         cy_awsport_network_delete(&g_sig.net_ctx);
@@ -895,7 +1032,21 @@ SignalingHandle signaling_connect(const char *signed_url) {
     }
 
     free(host);
+
+    // 7. 101 verified — hand the open NetworkContext_t to wslay. From here on
+    //    all I/O on this connection goes through the event-loop callbacks.
+    int wrc = wslay_event_context_client_init(&g_sig.ws_ctx, &g_wslay_cbs, &g_sig);
+    if (0 != wrc) {
+        printf("[signaling] wslay_event_context_client_init failed: %d\n", wrc);
+        cy_awsport_network_disconnect(&g_sig.net_ctx);
+        cy_awsport_network_delete(&g_sig.net_ctx);
+        return NULL;
+    }
+
     g_sig.connected = true;
+    g_sig.transport_error = false;
+    g_sig.latched_msg = NULL;
+    g_sig.latched_msg_len = 0;
     printf("[signaling] WS upgrade OK (101 Switching Protocols)\n");
     return &g_sig;
 }
@@ -904,18 +1055,82 @@ void signaling_disconnect(SignalingHandle sig) {
     if (NULL == sig || !sig->connected) {
         return;
     }
+    if (NULL != sig->ws_ctx) {
+        wslay_event_context_free(sig->ws_ctx);
+        sig->ws_ctx = NULL;
+    }
+    free(sig->latched_msg);
+    sig->latched_msg = NULL;
+    sig->latched_msg_len = 0;
     cy_awsport_network_disconnect(&sig->net_ctx);
     cy_awsport_network_delete(&sig->net_ctx);
     sig->connected = false;
 }
 
+// Drive the wslay event loop until either a non-control message lands (latched
+// by wslay_on_msg_recv_cb) or budget_ms elapses. Returns 0 on message, 1 on
+// idle timeout (no error — caller may retry), -1 on transport / protocol error.
+//
+// The current owner cadence for Increment B is "loop runs without faulting" —
+// receiving an actual SDP offer is master-initiated and not part of the gate.
+// The TODO past this point is parsing the JSON envelope (messageType /
+// messagePayload, base64-decoded) into a real SDP offer string.
 int signaling_wait_for_offer(SignalingHandle sig, const char **out_offer) {
-    (void) sig;
-    printf("[signaling] signaling_wait_for_offer: STUB\n");
-    if (out_offer) {
-        *out_offer = NULL;
+    if (NULL == sig || NULL == out_offer || !sig->connected || NULL == sig->ws_ctx) {
+        return -1;
     }
-    return -1;
+    *out_offer = NULL;
+
+    // Free any prior un-consumed latched message before we start polling — the
+    // caller has had its chance to read the previous one.
+    free(sig->latched_msg);
+    sig->latched_msg = NULL;
+    sig->latched_msg_len = 0;
+
+    const TickType_t budget = pdMS_TO_TICKS(WSS_OFFER_WAIT_BUDGET_MS);
+    TickType_t start = xTaskGetTickCount();
+
+    while ((xTaskGetTickCount() - start) < budget) {
+        // Send any queued frames first (close, pong, future messages).
+        if (wslay_event_want_write(sig->ws_ctx)) {
+            int wrc = wslay_event_send(sig->ws_ctx);
+            if (0 != wrc) {
+                printf("[signaling] wslay_event_send: %d\n", wrc);
+                return -1;
+            }
+        }
+
+        if (wslay_event_want_read(sig->ws_ctx)) {
+            int wrc = wslay_event_recv(sig->ws_ctx);
+            if (0 != wrc) {
+                printf("[signaling] wslay_event_recv: %d\n", wrc);
+                return -1;
+            }
+        } else {
+            // Read side disabled (close received / shutdown_read called) and
+            // nothing left to write — connection is effectively done.
+            if (!wslay_event_want_write(sig->ws_ctx)) {
+                printf("[signaling] WS read+write both disabled; closing\n");
+                return -1;
+            }
+        }
+
+        if (sig->transport_error) {
+            return -1;
+        }
+
+        if (NULL != sig->latched_msg) {
+            *out_offer = sig->latched_msg;
+            return 0;
+        }
+
+        // Yield. The recv callback already blocks up to WSS_SOCK_RECV_TIMEOUT_MS,
+        // but want_read may be 0 (e.g., right after a control-frame round trip),
+        // so a small extra yield keeps this loop cooperative.
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+
+    return 1;  // idle timeout
 }
 
 int signaling_send_answer(SignalingHandle sig, const char *sdp_answer) {

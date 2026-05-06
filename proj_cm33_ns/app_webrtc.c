@@ -171,20 +171,43 @@ static int run_session(void) {
     memset(&aws_creds, 0, sizeof(aws_creds));
     memset(region_buf, 0, sizeof(region_buf));
 
-    // WSS upgrade handshake. Today this proves the transport path: open TLS,
-    // send GET ... Upgrade, verify 101 + Sec-WebSocket-Accept, tear down.
-    // Next session keeps the connection alive and hands it to wslay for
-    // SDP/ICE frame exchange.
+    // Open the WS connection and keep it alive across the wait_for_offer loop
+    // — TLS handoff is paid once at handshake, then wslay drives frame I/O on
+    // the same NetworkContext_t. Disconnect happens at session end, not after
+    // the upgrade.
     SignalingHandle sig = signaling_connect(signed_url);
+    // The presigned URL is multi-KB and signaling_connect has already extracted
+    // host+path into its own buffer — free immediately so wslay's ~10 KB of
+    // contiguous allocations (frame_ctx ibuf[4096] + event_ctx obuf[4096] +
+    // queues) have headroom on a tight heap. See PILOT.md §6 (heap budget).
+    free(signed_url);
+    signed_url = NULL;
     if (NULL == sig) {
         printf("[webrtc] signaling_connect failed\n");
-        rc = -1;
-        goto cleanup;
+        return -1;
     }
+
+    // Increment B gate: drive the wslay event loop without faulting. KVS viewer
+    // sessions are master-initiated, so an idle timeout (rc==1) is the expected
+    // happy path until a browser actually publishes an offer. Any negative rc
+    // is fatal — tear down, back off, retry.
+    const char *offer = NULL;
+    int wait_rc = signaling_wait_for_offer(sig, &offer);
+    if (wait_rc < 0) {
+        printf("[webrtc] signaling_wait_for_offer: error\n");
+    } else if (1 == wait_rc) {
+        printf("[webrtc] signaling_wait_for_offer: idle (no offer yet)\n");
+    } else {
+        printf("[webrtc] WS offer received (%u bytes) — parsing TBD\n",
+               (unsigned)(NULL != offer ? strlen(offer) : 0));
+    }
+
     signaling_disconnect(sig);
 
-    // Protocol implementation continues in subsequent sessions.
-    rc = -1;
+    // Protocol implementation (offer parse / answer send / ICE / DTLS / media)
+    // continues in subsequent sessions. Always return -1 so run_session is
+    // re-entered after the backoff.
+    return -1;
 
 cleanup:
     free(signed_url);

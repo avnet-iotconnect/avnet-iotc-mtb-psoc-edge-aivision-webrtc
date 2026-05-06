@@ -340,7 +340,7 @@ void cm55_encoder_task(void *arg) {
 
     if (!encoder_minih264_init()) {
         printf("[enc] minih264 init failed; encoder task idling\r\n");
-        for (;;) { cy_rtos_delay_milliseconds(1000); }
+        for (;;) { vTaskDelay(pdMS_TO_TICKS(1000)); }
     }
     printf("[enc] minih264 ready: %dx%d gop=%d bitrate=%d bps\r\n",
         ENCODER_FRAME_WIDTH, ENCODER_FRAME_HEIGHT,
