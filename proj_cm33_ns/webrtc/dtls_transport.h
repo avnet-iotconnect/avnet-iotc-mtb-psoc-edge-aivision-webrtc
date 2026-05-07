@@ -9,6 +9,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* Forward-declared so callers that don't already have lwIP/POSIX sockets
+ * visible can still include this header. dtls_transport.c (and any caller
+ * that actually constructs the sockaddr) pulls "lwip/sockets.h" itself. */
+struct sockaddr;
+
 /* DTLS-SRTP transport: owns a UDP socket (lwIP BSD), wraps mbedTLS DTLS via
  * BIO callbacks, generates a self-signed cert at start, exposes the local
  * fingerprint for the SDP, verifies the remote fingerprint on handshake,

@@ -26,6 +26,7 @@
 
 #include "webrtc/aws_creds.h"
 #include "webrtc/csprng.h"
+#include "webrtc/dtls_transport.h"
 #include "webrtc/signaling.h"
 
 // WSS endpoint buffer: "wss://m1.kinesisvideo.<region>.amazonaws.com" — 128 is plenty.
@@ -278,11 +279,28 @@ void app_webrtc_init(void) {
         return;
     }
 
+    printf("[webrtc] init\r\n");
+
     // Bring the WebRTC-owned DRBG up early. Signaling, ICE, and DTLS will all
     // pull from it; cy-secure-sockets has its own DRBG we can't share.
     if (0 != webrtc_csprng_init()) {
         printf("[webrtc] csprng init failed — abort task creation\n");
         return;
+    }
+
+    // TEMP (Increment D1): generate the DTLS cert + fingerprint at boot and
+    // print the fingerprint. Verifies cert-gen path before D2 wires it into
+    // the SDP answer. Remove these prints once D3 confirms Chrome accepts the
+    // answer end-to-end.
+    DtlsTransportHandle dt_smoke = dtls_transport_create();
+    if (NULL != dt_smoke) {
+        char fp[128];
+        if (0 == dtls_transport_get_local_fingerprint(dt_smoke, fp, sizeof(fp))) {
+            printf("[dtls] local fingerprint: %s\n", fp);
+        }
+        dtls_transport_destroy(dt_smoke);
+    } else {
+        printf("[dtls] cert generation smoke test failed\n");
     }
 
     BaseType_t ok = xTaskCreate(webrtc_task, APP_WEBRTC_TASK_NAME, APP_WEBRTC_TASK_STACK,
