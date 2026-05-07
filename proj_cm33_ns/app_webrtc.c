@@ -200,9 +200,21 @@ static int run_session(void) {
 
     printf("[webrtc] WS connection established, waiting for offer...\n");
 
+    // Per-session DTLS context: holds the cert/key/fingerprint that goes into
+    // the SDP answer's a=fingerprint line. Created once at session start and
+    // destroyed on every exit path. D4+ will reuse the same context for the
+    // UDP socket + DTLS handshake; today only the fingerprint is consumed.
+    DtlsTransportHandle dt = dtls_transport_create();
+    if (NULL == dt) {
+        printf("[webrtc] dtls_transport_create failed\n");
+        signaling_disconnect(sig);
+        return -1;
+    }
+
     char *offer_sdp = malloc(APP_WEBRTC_SDP_BUF_LEN);
     if (NULL == offer_sdp) {
         printf("[webrtc] OOM for SDP buffer (%u bytes)\n", (unsigned) APP_WEBRTC_SDP_BUF_LEN);
+        dtls_transport_destroy(dt);
         signaling_disconnect(sig);
         return -1;
     }
@@ -215,27 +227,38 @@ static int run_session(void) {
     if (0 == wait_rc) {
         printf("[webrtc] WS offer received (%u bytes of SDP)\n", (unsigned) offer_len);
 
-        // Stub SDP_ANSWER for Increment C: prove the envelope round trip.
-        // Real SDP arrives with Increment D when DTLS keying is wired and we
-        // can fill in fingerprint, ufrag/pwd, and candidate lines. Keep the
-        // body short — KVS won't accept it as a working answer either way,
-        // and the success criterion here is "browser sees something arrive."
-        static const char stub_answer[] =
-            "v=0\r\n"
-            "o=- 0 0 IN IP4 0.0.0.0\r\n"
-            "s=-\r\n"
-            "t=0 0\r\n";
-        int send_rc = signaling_send_answer(sig, stub_answer);
-        if (0 != send_rc) {
-            printf("[webrtc] signaling_send_answer failed rc=%d\n", send_rc);
+        // Build the SDP answer from the captured offer + D1 fingerprint + fresh
+        // ICE creds. Stack-allocated per GUIDELINES.md buffer rules: fixed size,
+        // single-stage transient, no cleanup path. Body is typically ~600-900 B;
+        // 1536 B leaves headroom and matches the verified D2 smoke shape.
+        char answer_buf[1536];
+        size_t answer_len = 0;
+        int build_rc = peer_connection_build_answer(
+            dt,
+            offer_sdp, offer_len,
+            answer_buf, sizeof(answer_buf) - 1,
+            &answer_len
+        );
+        if (0 == build_rc) {
+            // signaling_send_answer takes a NUL-terminated string (calls strlen);
+            // the serializer writes body bytes only. NUL-terminate in place.
+            answer_buf[answer_len] = '\0';
+            int send_rc = signaling_send_answer(sig, answer_buf);
+            if (0 != send_rc) {
+                printf("[webrtc] signaling_send_answer failed rc=%d\n", send_rc);
+            }
+        } else {
+            printf("[webrtc] peer_connection_build_answer failed rc=%d\n", build_rc);
         }
         // Fall through to disconnect either way. Real ICE / DTLS / SRTP / media
-        // work continues in Increment D+; for today the round trip is the gate.
+        // work continues in D4+; today's gate is "Chrome accepts the answer
+        // past setRemoteDescription and starts ICE/DTLS attempts."
     } else {
         printf("[webrtc] signaling_wait_for_offer: error\n");
     }
 
     free(offer_sdp);
+    dtls_transport_destroy(dt);
     signaling_disconnect(sig);
 
     // Always return -1 today — even on the happy round-trip the session has no
@@ -248,46 +271,8 @@ cleanup:
 }
 
 
-// TEMP (Increment D1+D2): boot-time smoke. Generates a DTLS cert, prints the
-// fingerprint, and dumps a sample SDP answer built from that fingerprint +
-// fresh ICE creds. D1 proves cert-gen; D2 proves the answer assembles with
-// every required line well-formed. Lives on the webrtc task (8 KB stack) —
-// app_webrtc_init runs on main's tiny pre-scheduler stack and cannot host
-// mbedTLS / cert / SDP work. Remove once D3 confirms Chrome accepts the
-// answer end-to-end.
-static void run_d1_d2_smoke(void) {
-    DtlsTransportHandle dt_smoke = dtls_transport_create();
-    if (NULL == dt_smoke) {
-        printf("[dtls] cert generation smoke test failed\n");
-        return;
-    }
-    char fp[128];
-    if (0 == dtls_transport_get_local_fingerprint(dt_smoke, fp, sizeof(fp))) {
-        printf("[dtls] local fingerprint: %s\n", fp);
-    }
-    static const char OFFER_PLACEHOLDER[] = "v=0\r\n... offer-placeholder ...\r\n";
-    char answer_buf[1536];
-    size_t answer_len = 0;
-    int rc = peer_connection_build_answer(
-        dt_smoke,
-        OFFER_PLACEHOLDER, sizeof(OFFER_PLACEHOLDER) - 1,
-        answer_buf, sizeof(answer_buf),
-        &answer_len
-    );
-    if (0 == rc) {
-        printf("[pc] -- BEGIN SDP ANSWER --\n");
-        // %.*s — answer_buf is not NUL-terminated by the serializer.
-        printf("%.*s", (int) answer_len, answer_buf);
-        printf("[pc] -- END SDP ANSWER --\n");
-    }
-    dtls_transport_destroy(dt_smoke);
-}
-
-
 static void webrtc_task(void *arg) {
     (void) arg;
-
-    run_d1_d2_smoke();
 
     for (;;) {
         if (!webrtc_running) {
@@ -326,10 +311,6 @@ void app_webrtc_init(void) {
         printf("[webrtc] csprng init failed — abort task creation\n");
         return;
     }
-
-    // Boot-time smokes (D1 fingerprint, D2 SDP answer dump) run as the first
-    // thing on webrtc_task — they need an 8 KB stack for mbedTLS cert-gen,
-    // and main's pre-scheduler stack here is tiny.
 
     BaseType_t ok = xTaskCreate(webrtc_task, APP_WEBRTC_TASK_NAME, APP_WEBRTC_TASK_STACK,
         NULL, APP_WEBRTC_TASK_PRIORITY, &webrtc_task_handle
