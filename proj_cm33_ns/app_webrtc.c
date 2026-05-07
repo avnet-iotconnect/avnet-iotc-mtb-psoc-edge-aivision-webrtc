@@ -34,11 +34,13 @@
 // AWS region codes are bounded at 50 characters by API constraint.
 #define APP_WEBRTC_AWS_REGION_MAXLEN 50
 
-// SDP buffer for the offer-side base64 decode. The first hardware-verified
-// browser offer was 365 envelope bytes (~270 bytes of SDP). Real offers with
-// codecs / RTX / fingerprint lines run 1.5–4 KB; 4 KB covers them with
-// headroom while keeping heap pressure manageable (PILOT §6).
-#define APP_WEBRTC_SDP_BUF_LEN     (4U * 1024U)
+// SDP buffer for the offer-side base64 decode. First real Chrome browser
+// offer (2026-05-06 hardware run) was 10133 base64 bytes → ~7600 bytes of
+// decoded SDP — full WebRTC offers with all H.264 profile-level-id lines,
+// RTX, ulpfec, fingerprint, ICE candidates etc. run that big. 12 KB gives
+// headroom for the rare extra-bloated offer without re-spending heap pressure
+// (PILOT §6).
+#define APP_WEBRTC_SDP_BUF_LEN     (12U * 1024U)
 
 
 #define APP_WEBRTC_TASK_NAME       ("CM33 WebRTC")

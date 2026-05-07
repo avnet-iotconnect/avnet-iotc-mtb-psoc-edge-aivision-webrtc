@@ -806,12 +806,10 @@ static ssize_t wslay_recv_cb(wslay_event_context_ptr ctx, uint8_t *buf, size_t l
     if (n < 0) {
         sig->transport_error = true;
         wslay_event_set_error(ctx, WSLAY_ERR_CALLBACK_FAILURE);
-        printf("[signaling] wslay recv: socket error %d\n", (int) n);
+        printf("[sig] sock recv error n=%d\n", (int) n);
         return -1;
     }
     if (0 == n) {
-        // Per-call socket timeout — wslay treats WOULDBLOCK as "stop receiving
-        // for this tick, try again later".
         wslay_event_set_error(ctx, WSLAY_ERR_WOULDBLOCK);
         return -1;
     }
@@ -826,7 +824,7 @@ static ssize_t wslay_send_cb(wslay_event_context_ptr ctx, const uint8_t *data, s
     if (n < 0) {
         sig->transport_error = true;
         wslay_event_set_error(ctx, WSLAY_ERR_CALLBACK_FAILURE);
-        printf("[signaling] wslay send: socket error %d\n", (int) n);
+        printf("[sig] sock send error n=%d\n", (int) n);
         return -1;
     }
     if (0 == n) {
@@ -854,16 +852,19 @@ static void dispatch_text_frame(SignalingHandle sig, const uint8_t *msg, size_t 
     WssRecvMessage_t recv = { 0 };
     SignalingResult_t sig_rc = Signaling_ParseWssRecvMessage((const char *) msg, msg_len, &recv);
     if (SIGNALING_RESULT_OK != sig_rc) {
-        printf("[signaling] ParseWssRecvMessage failed: %d (len=%u)\n",
-               (int) sig_rc, (unsigned) msg_len);
+        printf("[sig] parse fail rc=%d len=%u\n", (int) sig_rc, (unsigned) msg_len);
         return;
     }
 
+    // Per-frame decoded type. SignalingTypeMessage_t: 0=UNKNOWN, 1=SDP_OFFER,
+    // 2=SDP_ANSWER, 3=ICE_CANDIDATE, 4=GO_AWAY, 5=RECONNECT_ICE_SERVER,
+    // 6=STATUS_RESPONSE.
+    printf("[sig]   type=%d sender=%.*s\n",
+           (int) recv.messageType,
+           (int) recv.senderClientIdLength, recv.pSenderClientId ? recv.pSenderClientId : "");
+
     if (SIGNALING_TYPE_MESSAGE_SDP_OFFER != recv.messageType) {
-        // Trickle ICE / status / go-away — drop silently for Increment C.
-        // Increment D+ will route ICE_CANDIDATE into the ICE controller.
-        printf("[signaling] dropping non-SDP_OFFER (messageType=%d, %u bytes)\n",
-               (int) recv.messageType, (unsigned) msg_len);
+        // Increment D+ will route ICE_CANDIDATE / GO_AWAY through.
         return;
     }
 
@@ -926,12 +927,10 @@ static void wslay_on_msg_recv_cb(wslay_event_context_ptr ctx,
         return;
     }
 
-    printf("[signaling] WS msg: opcode=0x%x len=%u\n",
+    // One line per WS frame is useful flow tracing for Increment D bring-up
+    // (ICE controller wiring). messageType is decoded in dispatch_text_frame.
+    printf("[sig] frame op=0x%x len=%u\n",
            (unsigned) arg->opcode, (unsigned) arg->msg_length);
-    // TEMP (Increment C diagnostic): dump the raw envelope so we can see
-    // exactly what KVS routed to the master. Remove once SDP_OFFER round
-    // trip is verified.
-    printf("[signaling] WS raw: %.*s\n", (int) arg->msg_length, (const char *) arg->msg);
     dispatch_text_frame(sig, arg->msg, arg->msg_length);
 }
 
@@ -1193,31 +1192,19 @@ int signaling_wait_for_offer(SignalingHandle sig, char *out_sdp, size_t out_sdp_
     sig->offer_ready = false;
 
     int rc;
-    // TEMP (Increment C diagnostic): count how many wslay_event_recv calls
-    // happen before the socket dies. 1 means AWS closed inside the same call
-    // that delivered the frame (no opportunity for us to provoke the close);
-    // ≥2 means we may have sent something (e.g., a wslay-queued close frame)
-    // between recvs. Remove once Increment C is verified.
-    unsigned recv_calls = 0;
     for (;;) {
         // Send any queued frames first (close, pong, future messages).
-        bool ww_before = wslay_event_want_write(sig->ws_ctx);
-        if (ww_before) {
+        if (wslay_event_want_write(sig->ws_ctx)) {
             int wrc = wslay_event_send(sig->ws_ctx);
             if (0 != wrc && !sig->offer_ready) {
-                printf("[signaling] wslay_event_send: %d\n", wrc);
+                printf("[sig] wslay_event_send rc=%d\n", wrc);
                 rc = -1;
                 goto out;
             }
-            // TEMP (Increment C diagnostic): a queued send before recv often
-            // means wslay's about to close on us (close frames are queued
-            // implicitly on protocol issues). Loud so it's visible in triage.
-            printf("[signaling] tx flushed (want_write was set)\n");
         }
 
         int recv_err = 0;
         if (wslay_event_want_read(sig->ws_ctx)) {
-            recv_calls++;
             recv_err = wslay_event_recv(sig->ws_ctx);
         }
 
@@ -1232,7 +1219,8 @@ int signaling_wait_for_offer(SignalingHandle sig, char *out_sdp, size_t out_sdp_
         }
 
         if (0 != recv_err) {
-            printf("[signaling] wslay_event_recv: %d\n", recv_err);
+            printf("[sig] wslay_event_recv rc=%d transport_err=%d\n",
+                   recv_err, (int) sig->transport_error);
             rc = -1;
             goto out;
         }
@@ -1243,9 +1231,8 @@ int signaling_wait_for_offer(SignalingHandle sig, char *out_sdp, size_t out_sdp_
         }
 
         if (!wslay_event_want_read(sig->ws_ctx) && !wslay_event_want_write(sig->ws_ctx)) {
-            // Read+write both disabled (close received / shutdown), nothing
-            // left to do.
-            printf("[signaling] WS read+write both disabled; closing\n");
+            // Read+write both disabled — peer closed cleanly, nothing left.
+            printf("[sig] peer close, read+write both disabled\n");
             rc = -1;
             goto out;
         }
@@ -1257,9 +1244,8 @@ int signaling_wait_for_offer(SignalingHandle sig, char *out_sdp, size_t out_sdp_
     }
 
 out:
-    // TEMP (Increment C diagnostic): see comment at recv_calls declaration.
-    printf("[signaling] wait_for_offer exit: rc=%d recv_calls=%u offer_ready=%d\n",
-           rc, recv_calls, (int) sig->offer_ready);
+    printf("[sig] wait_for_offer exit rc=%d offer_ready=%d\n",
+           rc, (int) sig->offer_ready);
     // Drop the parked buffer — it's only valid for the duration of this call.
     sig->offer_sdp_buf = NULL;
     sig->offer_sdp_cap = 0;

@@ -1010,11 +1010,15 @@
 
 
 // Nik: Rough min values based on testing with MQTT. May change for mTLS + HTTP
+// Nik: We have a ton of ram now .. Temp adjust to check.
+
+// TODO: adjust  if pilot success
 #undef MBEDTLS_SSL_IN_CONTENT_LEN
-#define MBEDTLS_SSL_IN_CONTENT_LEN (6 * 1024)
+#define MBEDTLS_SSL_IN_CONTENT_LEN (12 * 1024)
 
 #undef MBEDTLS_SSL_OUT_CONTENT_LEN
-#define MBEDTLS_SSL_OUT_CONTENT_LEN (2 * 1024)
+#define MBEDTLS_SSL_OUT_CONTENT_LEN (6 * 1024)
+
 
 /**
  * The cy-mbedtls-acceleration module supports only DP_SECP192R1,
