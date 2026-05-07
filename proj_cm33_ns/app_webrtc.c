@@ -27,6 +27,7 @@
 #include "webrtc/aws_creds.h"
 #include "webrtc/csprng.h"
 #include "webrtc/dtls_transport.h"
+#include "webrtc/peer_connection.h"
 #include "webrtc/signaling.h"
 
 // WSS endpoint buffer: "wss://m1.kinesisvideo.<region>.amazonaws.com" — 128 is plenty.
@@ -247,8 +248,46 @@ cleanup:
 }
 
 
+// TEMP (Increment D1+D2): boot-time smoke. Generates a DTLS cert, prints the
+// fingerprint, and dumps a sample SDP answer built from that fingerprint +
+// fresh ICE creds. D1 proves cert-gen; D2 proves the answer assembles with
+// every required line well-formed. Lives on the webrtc task (8 KB stack) —
+// app_webrtc_init runs on main's tiny pre-scheduler stack and cannot host
+// mbedTLS / cert / SDP work. Remove once D3 confirms Chrome accepts the
+// answer end-to-end.
+static void run_d1_d2_smoke(void) {
+    DtlsTransportHandle dt_smoke = dtls_transport_create();
+    if (NULL == dt_smoke) {
+        printf("[dtls] cert generation smoke test failed\n");
+        return;
+    }
+    char fp[128];
+    if (0 == dtls_transport_get_local_fingerprint(dt_smoke, fp, sizeof(fp))) {
+        printf("[dtls] local fingerprint: %s\n", fp);
+    }
+    static const char OFFER_PLACEHOLDER[] = "v=0\r\n... offer-placeholder ...\r\n";
+    char answer_buf[1536];
+    size_t answer_len = 0;
+    int rc = peer_connection_build_answer(
+        dt_smoke,
+        OFFER_PLACEHOLDER, sizeof(OFFER_PLACEHOLDER) - 1,
+        answer_buf, sizeof(answer_buf),
+        &answer_len
+    );
+    if (0 == rc) {
+        printf("[pc] -- BEGIN SDP ANSWER --\n");
+        // %.*s — answer_buf is not NUL-terminated by the serializer.
+        printf("%.*s", (int) answer_len, answer_buf);
+        printf("[pc] -- END SDP ANSWER --\n");
+    }
+    dtls_transport_destroy(dt_smoke);
+}
+
+
 static void webrtc_task(void *arg) {
     (void) arg;
+
+    run_d1_d2_smoke();
 
     for (;;) {
         if (!webrtc_running) {
@@ -288,20 +327,9 @@ void app_webrtc_init(void) {
         return;
     }
 
-    // TEMP (Increment D1): generate the DTLS cert + fingerprint at boot and
-    // print the fingerprint. Verifies cert-gen path before D2 wires it into
-    // the SDP answer. Remove these prints once D3 confirms Chrome accepts the
-    // answer end-to-end.
-    DtlsTransportHandle dt_smoke = dtls_transport_create();
-    if (NULL != dt_smoke) {
-        char fp[128];
-        if (0 == dtls_transport_get_local_fingerprint(dt_smoke, fp, sizeof(fp))) {
-            printf("[dtls] local fingerprint: %s\n", fp);
-        }
-        dtls_transport_destroy(dt_smoke);
-    } else {
-        printf("[dtls] cert generation smoke test failed\n");
-    }
+    // Boot-time smokes (D1 fingerprint, D2 SDP answer dump) run as the first
+    // thing on webrtc_task — they need an 8 KB stack for mbedTLS cert-gen,
+    // and main's pre-scheduler stack here is tiny.
 
     BaseType_t ok = xTaskCreate(webrtc_task, APP_WEBRTC_TASK_NAME, APP_WEBRTC_TASK_STACK,
         NULL, APP_WEBRTC_TASK_PRIORITY, &webrtc_task_handle
