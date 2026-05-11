@@ -12,11 +12,12 @@
  * required lines (v=, o=, s=, t=, m=, fingerprint, ice-ufrag/pwd, setup, mid)
  * are present so Chrome would accept it past setRemoteDescription.
  *
- * Not yet wired: peer_connection_apply_offer (still stub), peer_connection_run
- * (still stub), PeerConnection_WriteFrame (still stub). D3 swaps the
- * stub_answer in app_webrtc.c run_session() for this builder; D4+ adds the
- * UDP socket + ICE pair + DTLS handshake + SRTP keying + RTP send loop. */
+ * D4b adds peer_connection_extract_remote_ice_creds() — a minimal scrape of
+ * the offer's a=ice-ufrag / a=ice-pwd lines (not a full SDP parser). The
+ * peer_connection_run / PeerConnection_WriteFrame stubs at the bottom remain
+ * placeholders for D5+ (DTLS handshake, SRTP keying, RTP send loop). */
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -97,7 +98,8 @@ int peer_connection_build_answer(
     size_t offer_len,
     char *out,
     size_t cap,
-    size_t *out_len
+    size_t *out_len,
+    PeerConnectionLocalIceCreds *out_ice_creds
 ) {
     if (NULL == dt || NULL == offer || 0U == offer_len || NULL == out || NULL == out_len || cap < 256U) {
         printf("[pc] build_answer bad args\n");
@@ -269,12 +271,101 @@ int peer_connection_build_answer(
     }
     *out_len = finalized_len;
 
+    // Surface the local ICE creds so the ICE controller can use the same bytes
+    // as the STUN message-integrity key. Browser signs its connectivity checks
+    // with our SDP ufrag/pwd; mismatch breaks the handshake.
+    if (NULL != out_ice_creds) {
+        memcpy(out_ice_creds->ufrag, ufrag, PC_ICE_UFRAG_LEN);
+        out_ice_creds->ufrag[PC_ICE_UFRAG_LEN] = '\0';
+        out_ice_creds->ufrag_len = PC_ICE_UFRAG_LEN;
+        memcpy(out_ice_creds->pwd, pwd, PC_ICE_PWD_LEN);
+        out_ice_creds->pwd[PC_ICE_PWD_LEN] = '\0';
+        out_ice_creds->pwd_len = PC_ICE_PWD_LEN;
+    }
+
     // Quick UART eyeball — single line, not the body. The verification harness
     // will dump the body separately. Length acknowledges the offer was seen.
     printf(
         "[pc] answer built: %u bytes (offer was %u bytes)\n",
         (unsigned) finalized_len, (unsigned) offer_len
     );
+    return 0;
+}
+
+
+// Find an a=<name>:<value> attribute line in the SDP starting from offset.
+// Returns a pointer to the value start and writes its length (up to CR/LF) into
+// out_len. NULL if not found. Matches the first occurrence — the session-level
+// and m=-level ufrag/pwd are identical in Chrome's offer today, and we have
+// one m-line anyway.
+static const char *find_sdp_attr(const char *sdp, size_t sdp_len, const char *name, size_t *out_len) {
+    size_t name_len = strlen(name);
+    // Each line: "a=<name>:<value>". We search for "\na=<name>:" so we anchor
+    // at the start of a line (or "a=<name>:" at offset 0).
+    for (size_t i = 0; i + 2 + name_len + 1 <= sdp_len; i++) {
+        bool at_line_start = (i == 0) || (sdp[i - 1] == '\n');
+        if (!at_line_start) {
+            continue;
+        }
+        if (sdp[i] != 'a' || sdp[i + 1] != '=') {
+            continue;
+        }
+        if (0 != memcmp(sdp + i + 2, name, name_len)) {
+            continue;
+        }
+        size_t after_name = i + 2 + name_len;
+        if (after_name >= sdp_len || sdp[after_name] != ':') {
+            continue;
+        }
+        size_t v = after_name + 1;
+        size_t e = v;
+        while (e < sdp_len && sdp[e] != '\r' && sdp[e] != '\n') {
+            e++;
+        }
+        *out_len = e - v;
+        return sdp + v;
+    }
+    return NULL;
+}
+
+int peer_connection_extract_remote_ice_creds(
+    const char *offer,
+    size_t offer_len,
+    PeerConnectionRemoteIceCreds *out
+) {
+    if (NULL == offer || 0U == offer_len || NULL == out) {
+        return -1;
+    }
+    memset(out, 0, sizeof(*out));
+
+    size_t ufrag_len = 0;
+    const char *ufrag = find_sdp_attr(offer, offer_len, "ice-ufrag", &ufrag_len);
+    if (NULL == ufrag) {
+        printf("[pc] a=ice-ufrag not found in offer\n");
+        return -1;
+    }
+    if (0U == ufrag_len || ufrag_len >= sizeof(out->ufrag)) {
+        printf("[pc] a=ice-ufrag length out of range: %u\n", (unsigned) ufrag_len);
+        return -1;
+    }
+
+    size_t pwd_len = 0;
+    const char *pwd = find_sdp_attr(offer, offer_len, "ice-pwd", &pwd_len);
+    if (NULL == pwd) {
+        printf("[pc] a=ice-pwd not found in offer\n");
+        return -1;
+    }
+    if (0U == pwd_len || pwd_len >= sizeof(out->pwd)) {
+        printf("[pc] a=ice-pwd length out of range: %u\n", (unsigned) pwd_len);
+        return -1;
+    }
+
+    memcpy(out->ufrag, ufrag, ufrag_len);
+    out->ufrag[ufrag_len] = '\0';
+    out->ufrag_len = ufrag_len;
+    memcpy(out->pwd, pwd, pwd_len);
+    out->pwd[pwd_len] = '\0';
+    out->pwd_len = pwd_len;
     return 0;
 }
 
@@ -297,21 +388,6 @@ PeerConnectionHandle peer_connection_create(void) {
 void peer_connection_destroy(PeerConnectionHandle pc) {
     (void) pc;
     printf("peer_connection_destroy: STUB\n");
-}
-
-int peer_connection_apply_offer(
-    PeerConnectionHandle pc,
-    const char *sdp_offer,
-    char *out_sdp_answer,
-    size_t cap
-) {
-    (void) pc;
-    (void) sdp_offer;
-    printf("peer_connection_apply_offer: STUB\n");
-    if (cap > 0 && out_sdp_answer) {
-        snprintf(out_sdp_answer, cap, "v=0\r\n... STUB SDP ANSWER ...\r\n");
-    }
-    return 0;
 }
 
 int peer_connection_run(PeerConnectionHandle pc, SignalingHandle sig) {

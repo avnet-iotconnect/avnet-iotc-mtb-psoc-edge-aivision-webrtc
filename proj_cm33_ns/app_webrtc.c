@@ -19,6 +19,8 @@
 #include "FreeRTOS.h"
 #include "task.h"
 
+#include "lwip/sockets.h"
+
 #include "iotconnect.h"
 #include "iotcl.h"
 
@@ -27,6 +29,7 @@
 #include "webrtc/aws_creds.h"
 #include "webrtc/csprng.h"
 #include "webrtc/dtls_transport.h"
+#include "webrtc/ice_controller.h"
 #include "webrtc/peer_connection.h"
 #include "webrtc/signaling.h"
 
@@ -133,6 +136,63 @@ static int populate_creds(AwsCreds *out, char *region_buf, size_t region_buf_siz
 }
 
 
+// D4b tick loop. Once the answer has shipped and the ICE controller is up,
+// drive three things per ~20 ms tick:
+//   1. signaling_tick — pump wslay (drains queued sends, reads incoming
+//      ICE_CANDIDATE frames from the browser; dispatch_text_frame feeds them
+//      into ice_controller_add_remote_candidate_json).
+//   2. ice_controller_send_pending_requests — emit STUN binding requests for
+//      any local candidate (srflx today) with a pending action.
+//   3. recvfrom(MSG_DONTWAIT) on the shared UDP fd — drain incoming UDP and
+//      first-byte demux: bytes 0..3 are STUN and go to ice_controller; DTLS
+//      (20..63) and RTP (128..191) routes wait for later increments and are
+//      logged + dropped today.
+// Loop exits when signaling_tick returns -1 (transport error / peer close).
+// D4c will add a "ready for D4c" / pair-nominated signal to exit cleanly.
+//
+// Stack scratch: ICE UDP recv goes into a 1500 B buffer (typical MTU, STUN
+// fits comfortably). GUIDELINES "Buffer allocation": fixed, transient,
+// single-stage; webrtc_task has 8 KB stack — invisible cost.
+static void run_tick_loop(SignalingHandle sig, int udp_fd) {
+    uint8_t rx[1500];
+    for (;;) {
+        if (0 != signaling_tick(sig)) {
+            printf("[webrtc] signaling_tick reported error / peer close — exiting tick loop\n");
+            return;
+        }
+
+        (void) ice_controller_send_pending_requests();
+
+        for (;;) {
+            struct sockaddr_in from;
+            socklen_t from_len = sizeof(from);
+            int n = recvfrom(udp_fd, rx, sizeof(rx), MSG_DONTWAIT,
+                             (struct sockaddr *) &from, &from_len);
+            if (n <= 0) {
+                break;
+            }
+            uint8_t first = rx[0];
+            if (first <= 3U) {
+                // STUN. Pass to ICE.
+                (void) ice_controller_handle_udp_packet(
+                    sig, rx, (size_t) n,
+                    (struct sockaddr *) &from, (int) from_len);
+            } else if (first >= 20U && first <= 63U) {
+                // DTLS — D5+.
+                printf("[webrtc] DTLS bytes on UDP fd (len=%d) — dropping (D5+)\n", n);
+            } else if (first >= 128U && first <= 191U) {
+                // RTP/RTCP — D6+.
+                printf("[webrtc] RTP bytes on UDP fd (len=%d) — dropping (D6+)\n", n);
+            } else {
+                printf("[webrtc] unknown UDP first byte 0x%02x len=%d\n", (unsigned) first, n);
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(APP_WEBRTC_POLL_IDLE_MS));
+    }
+}
+
+
 // Stub for the WSS-side session. Real shape: connect to the signaling channel
 // as MASTER, pump WSS for viewer-initiated offers, on offer run ICE -> DTLS ->
 // SRTP keying -> ring consumer start, media flows until signaling drops.
@@ -174,13 +234,15 @@ static int run_session(void) {
     // ahead of the in-tree WS handshake landing.
     printf("[webrtc] presigned master URL: %s\n", signed_url);
 
-    // Zero the local view so the AwsCreds pointers don't sit on the stack for
-    // the duration of the WSS session. The SDK-side cached triplet is *not*
-    // freed here — failed sessions retry, and re-obtaining via mTLS every
-    // back-off would be heavy. Cache lifetime is now bounded by either
+    // Zero the local AwsCreds view so credential pointers don't sit on the
+    // stack for the duration of the WSS session. The SDK-side cached triplet
+    // is *not* freed here — failed sessions retry, and re-obtaining via mTLS
+    // every back-off would be heavy. Cache lifetime is now bounded by either
     // expiry (M4 plug points) or app_webrtc_stop().
+    //
+    // region_buf stays live — D4a hands it to ice_controller_init() for the
+    // STUN endpoint host template. It's the AWS region string, not a secret.
     memset(&aws_creds, 0, sizeof(aws_creds));
-    memset(region_buf, 0, sizeof(region_buf));
 
     // Open the WS connection and keep it alive across the wait_for_offer loop
     // — TLS handoff is paid once at handshake, then wslay drives frame I/O on
@@ -224,6 +286,7 @@ static int run_session(void) {
     // viewer to show up.
     size_t offer_len = 0;
     int wait_rc = signaling_wait_for_offer(sig, offer_sdp, APP_WEBRTC_SDP_BUF_LEN, &offer_len);
+    bool ice_started = false;
     if (0 == wait_rc) {
         printf("[webrtc] WS offer received (%u bytes of SDP)\n", (unsigned) offer_len);
 
@@ -233,11 +296,13 @@ static int run_session(void) {
         // 1536 B leaves headroom and matches the verified D2 smoke shape.
         char answer_buf[1536];
         size_t answer_len = 0;
+        PeerConnectionLocalIceCreds local_ice_creds = { 0 };
         int build_rc = peer_connection_build_answer(
             dt,
             offer_sdp, offer_len,
             answer_buf, sizeof(answer_buf) - 1,
-            &answer_len
+            &answer_len,
+            &local_ice_creds
         );
         if (0 == build_rc) {
             // signaling_send_answer takes a NUL-terminated string (calls strlen);
@@ -246,18 +311,58 @@ static int run_session(void) {
             int send_rc = signaling_send_answer(sig, answer_buf);
             if (0 != send_rc) {
                 printf("[webrtc] signaling_send_answer failed rc=%d\n", send_rc);
+            } else {
+                // D4b: open the shared UDP socket, scrape remote ufrag/pwd from
+                // the offer, init the ICE controller, register the STUN server,
+                // trickle host candidate(s), then drop into the tick loop
+                // (wslay recv + UDP demux + 20 ms delay) until transport error
+                // or peer close. Per PILOT §3.1 D4 architecture: one socket
+                // owned by dtls_transport, file-scope ICE state, no second task.
+                // D4c adds the connectivity-check loop on top of this.
+                PeerConnectionRemoteIceCreds remote_ice_creds = { 0 };
+                if (0 != peer_connection_extract_remote_ice_creds(offer_sdp, offer_len, &remote_ice_creds)) {
+                    printf("[webrtc] could not extract remote ufrag/pwd from offer\n");
+                } else if (0 != dtls_transport_open_socket(dt)) {
+                    printf("[webrtc] dtls_transport_open_socket failed\n");
+                } else if (0 != ice_controller_init(
+                                    dtls_transport_get_socket(dt), region_buf,
+                                    (const uint8_t *) local_ice_creds.ufrag, local_ice_creds.ufrag_len,
+                                    (const uint8_t *) local_ice_creds.pwd,   local_ice_creds.pwd_len,
+                                    (const uint8_t *) remote_ice_creds.ufrag, remote_ice_creds.ufrag_len,
+                                    (const uint8_t *) remote_ice_creds.pwd,   remote_ice_creds.pwd_len)) {
+                    printf("[webrtc] ice_controller_init failed\n");
+                } else {
+                    ice_started = true;
+                    // Offer body has been consumed (build_answer + remote
+                    // cred scrape); free the 12 KB buffer before dropping
+                    // into the tick loop so wslay frame buffers + ICE rx
+                    // scratch don't compete with it on a tight heap.
+                    free(offer_sdp);
+                    offer_sdp = NULL;
+                    if (0 != ice_controller_gather_host_candidates(sig)) {
+                        printf("[webrtc] ice_controller_gather_host_candidates failed\n");
+                    }
+                    if (0 != ice_controller_add_stun_server()) {
+                        printf("[webrtc] ice_controller_add_stun_server failed — continuing host-only\n");
+                    }
+                    run_tick_loop(sig, dtls_transport_get_socket(dt));
+                }
             }
         } else {
             printf("[webrtc] peer_connection_build_answer failed rc=%d\n", build_rc);
         }
-        // Fall through to disconnect either way. Real ICE / DTLS / SRTP / media
-        // work continues in D4+; today's gate is "Chrome accepts the answer
-        // past setRemoteDescription and starts ICE/DTLS attempts."
+        // Fall through to disconnect either way. DTLS handshake / pair
+        // selection / media path land in D4c/D5+.
     } else {
         printf("[webrtc] signaling_wait_for_offer: error\n");
     }
 
     free(offer_sdp);
+    // Teardown order: ICE first (it borrows dt's UDP fd), then DTLS (closes
+    // the fd), then signaling.
+    if (ice_started) {
+        ice_controller_deinit();
+    }
     dtls_transport_destroy(dt);
     signaling_disconnect(sig);
 

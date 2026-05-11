@@ -15,12 +15,35 @@ typedef struct PeerConnectionCtx *PeerConnectionHandle;
 PeerConnectionHandle peer_connection_create(void);
 void peer_connection_destroy(PeerConnectionHandle pc);
 
-/* Apply the remote offer; produce our local answer. */
-int peer_connection_apply_offer(
-    PeerConnectionHandle pc,
-    const char *sdp_offer,
-    char *out_sdp_answer,
-    size_t cap
+/* Local ICE creds generated for the SDP a=ice-ufrag / a=ice-pwd lines.
+ * Surfaced from peer_connection_build_answer so ice_controller can use the
+ * same bytes as the STUN message-integrity key (RFC 8445 §7.2.2). Mismatch
+ * with the SDP lines would break the browser's connectivity-check signing. */
+typedef struct PeerConnectionLocalIceCreds {
+    char ufrag[16];        /* NUL-terminated alnum; today PC_ICE_UFRAG_LEN=8. */
+    char pwd[32];          /* NUL-terminated alnum; today PC_ICE_PWD_LEN=24.  */
+    size_t ufrag_len;
+    size_t pwd_len;
+} PeerConnectionLocalIceCreds;
+
+/* Remote ICE creds scraped from the offer's a=ice-ufrag / a=ice-pwd lines.
+ * Bounds are RFC 8839 §5.4: ufrag is 4-256 chars, pwd is 22-256 chars. We
+ * crop conservatively — Chrome ships short values today and we never have to
+ * round-trip these. Mismatch fails STUN integrity check at the browser. */
+typedef struct PeerConnectionRemoteIceCreds {
+    char ufrag[64];
+    char pwd[128];
+    size_t ufrag_len;
+    size_t pwd_len;
+} PeerConnectionRemoteIceCreds;
+
+/* Minimal offer parse: scan for a=ice-ufrag:<value> and a=ice-pwd:<value>.
+ * Not a full SDP parser — just the two attributes we have to round-trip into
+ * the ICE controller. Returns 0 on success (both attrs found and copied). */
+int peer_connection_extract_remote_ice_creds(
+    const char *offer,
+    size_t offer_len,
+    PeerConnectionRemoteIceCreds *out
 );
 
 /* Build an SDP answer body suitable for KVS / Chrome.
@@ -47,7 +70,8 @@ int peer_connection_build_answer(
     size_t offer_len,
     char *out,
     size_t cap,
-    size_t *out_len
+    size_t *out_len,
+    PeerConnectionLocalIceCreds *out_ice_creds
 );
 
 /* Drives the session after answer is sent: ICE pairing, DTLS handshake,

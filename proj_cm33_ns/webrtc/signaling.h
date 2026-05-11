@@ -48,4 +48,23 @@ int signaling_wait_for_offer(SignalingHandle sig, char *out_sdp, size_t out_sdp_
  * the caller can observe send errors. */
 int signaling_send_answer(SignalingHandle sig, const char *sdp_answer);
 
+/* Non-blocking pump of the wslay event loop — drains any queued send frames
+ * and reads any pending recv frames (which fan out into dispatch_text_frame /
+ * the ICE-controller path). Intended to be called once per tick from the
+ * D4b webrtc_task tick loop. Returns 0 on success, -1 on transport error or
+ * peer close (caller should tear down the session). */
+int signaling_tick(SignalingHandle sig);
+
+/* Trickle-out a single ICE candidate. Wraps it in the KVS WSS send envelope
+ * (action=ICE_CANDIDATE, RecipientClientId=latched senderClientId,
+ * MessagePayload=base64({"candidate":...,"sdpMid":...,"sdpMLineIndex":N})).
+ * Mirrors signaling_send_answer's drain behavior. candidate is the SDP
+ * "candidate:..." body (no "a=" prefix). */
+int signaling_send_ice_candidate(
+    SignalingHandle sig,
+    const char *candidate,
+    const char *sdp_mid,
+    int sdp_m_line_index
+);
+
 #endif /* WEBRTC_SIGNALING_H_ */

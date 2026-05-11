@@ -20,6 +20,7 @@
  * the PEM round trip entirely.
  */
 
+#include <errno.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,6 +29,12 @@
 #include "mbedtls/pk.h"
 #include "mbedtls/x509_crt.h"
 #include "mbedtls/sha256.h"
+
+/* lwIP BSD sockets for the single shared UDP fd. The project-wide
+ * LWIP_TIMEVAL_PRIVATE=0 (wifi-core's lwipopts.h) defers struct timeval to
+ * newlib's <sys/time.h>; clangd may not pick that up and squiggle a
+ * "redefinition of timeval" — the toolchain is fine. See webrtc/config.h. */
+#include "lwip/sockets.h"
 
 #include "webrtc/csprng.h"
 #include "webrtc/dtls_transport.h"
@@ -57,6 +64,10 @@ struct DtlsTransportCtx {
     mbedtls_pk_context key;
     mbedtls_x509_crt cert;
     char fingerprint[DTLS_FP_BUF_LEN];
+    /* The single UDP socket multiplexed by ICE / DTLS / RTP via first-byte
+     * demux. Opened lazily by dtls_transport_open_socket; -1 until then. */
+    int udp_fd;
+    uint16_t local_port;
 };
 
 
@@ -176,6 +187,8 @@ DtlsTransportHandle dtls_transport_create(void) {
     }
     mbedtls_pk_init(&ctx->key);
     mbedtls_x509_crt_init(&ctx->cert);
+    ctx->udp_fd = -1;
+    ctx->local_port = 0;
 
     if (0 != generate_keypair(ctx)) {
         goto fail;
@@ -227,6 +240,10 @@ void dtls_transport_destroy(DtlsTransportHandle dt) {
     if (NULL == dt) {
         return;
     }
+    if (dt->udp_fd >= 0) {
+        close(dt->udp_fd);
+        dt->udp_fd = -1;
+    }
     mbedtls_x509_crt_free(&dt->cert);
     mbedtls_pk_free(&dt->key);
     free(dt);
@@ -243,4 +260,60 @@ int dtls_transport_get_local_fingerprint(DtlsTransportHandle dt, char *out, size
     }
     memcpy(out, dt->fingerprint, needed);
     return 0;
+}
+
+
+int dtls_transport_open_socket(DtlsTransportHandle dt) {
+    if (NULL == dt) {
+        return -1;
+    }
+    if (dt->udp_fd >= 0) {
+        return 0;
+    }
+
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) {
+        printf("[dtls] socket(AF_INET, SOCK_DGRAM) failed: errno=%d\n", errno);
+        return -1;
+    }
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family      = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_port        = 0;
+    if (bind(fd, (struct sockaddr *) &addr, sizeof(addr)) < 0) {
+        printf("[dtls] bind(INADDR_ANY:0) failed: errno=%d\n", errno);
+        close(fd);
+        return -1;
+    }
+
+    struct sockaddr_in bound;
+    socklen_t bound_len = sizeof(bound);
+    if (getsockname(fd, (struct sockaddr *) &bound, &bound_len) < 0) {
+        printf("[dtls] getsockname failed: errno=%d\n", errno);
+        close(fd);
+        return -1;
+    }
+
+    dt->udp_fd     = fd;
+    dt->local_port = ntohs(bound.sin_port);
+    printf("[dtls] UDP socket open: fd=%d port=%u\n", fd, (unsigned) dt->local_port);
+    return 0;
+}
+
+
+int dtls_transport_get_socket(DtlsTransportHandle dt) {
+    if (NULL == dt) {
+        return -1;
+    }
+    return dt->udp_fd;
+}
+
+
+uint16_t dtls_transport_get_local_port(DtlsTransportHandle dt) {
+    if (NULL == dt) {
+        return 0;
+    }
+    return dt->local_port;
 }

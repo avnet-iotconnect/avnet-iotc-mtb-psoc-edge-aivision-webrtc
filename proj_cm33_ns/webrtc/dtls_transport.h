@@ -28,8 +28,21 @@ typedef struct DtlsTransportCtx *DtlsTransportHandle;
 DtlsTransportHandle dtls_transport_create(void);
 void dtls_transport_destroy(DtlsTransportHandle dt);
 
-/* Local UDP socket fd (lwIP). ICE shares this for STUN reads/writes. */
+/* Local UDP socket fd (lwIP). ICE shares this for STUN reads/writes.
+ * The socket is opened lazily by dtls_transport_open_socket(); calling this
+ * before that returns -1. */
 int dtls_transport_get_socket(DtlsTransportHandle dt);
+
+/* Local UDP port (host byte order) the socket is bound to. The kernel picks
+ * the port at bind time (we bind to INADDR_ANY:0). Returns 0 if the socket
+ * isn't open yet. */
+uint16_t dtls_transport_get_local_port(DtlsTransportHandle dt);
+
+/* Open the single UDP socket (lwIP BSD, AF_INET / SOCK_DGRAM, bind to
+ * INADDR_ANY:0). Discovers the kernel-picked port via getsockname so
+ * dtls_transport_get_local_port() can return it. Returns 0 on success.
+ * Idempotent: a second call with the socket already open is a no-op success. */
+int dtls_transport_open_socket(DtlsTransportHandle dt);
 
 /* SDP fingerprint string ("sha-256 AA:BB:..."), NUL-terminated. */
 int dtls_transport_get_local_fingerprint(DtlsTransportHandle dt, char *out, size_t cap);

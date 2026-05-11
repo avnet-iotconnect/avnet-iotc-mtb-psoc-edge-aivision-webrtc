@@ -54,6 +54,7 @@
 #include "wslay/wslay.h"
 
 #include "webrtc/csprng.h"
+#include "webrtc/ice_controller.h"
 #include "webrtc/signaling.h"
 
 // -------------------------------------------------------------------------
@@ -863,8 +864,37 @@ static void dispatch_text_frame(SignalingHandle sig, const uint8_t *msg, size_t 
            (int) recv.messageType,
            (int) recv.senderClientIdLength, recv.pSenderClientId ? recv.pSenderClientId : "");
 
+    if (SIGNALING_TYPE_MESSAGE_ICE_CANDIDATE == recv.messageType) {
+        // D4b: decode base64 payload + JSON-parse + feed to ICE controller.
+        // Inbound ICE_CANDIDATE JSON shape mirrors what we send out:
+        //   {"candidate":"<sdp body>","sdpMid":"0","sdpMLineIndex":0,
+        //    "usernameFragment":"…"}
+        // Payloads are small (Chrome's typical candidate is ~150-250 B
+        // base64, ~110-180 B decoded). 512 B stack scratch is comfortable.
+        if (NULL == recv.pBase64EncodedPayload || 0 == recv.base64EncodedPayloadLength) {
+            return;
+        }
+        uint8_t payload[512];
+        size_t decoded_len = 0;
+        int b64_rc = mbedtls_base64_decode(
+            payload, sizeof(payload), &decoded_len,
+            (const unsigned char *) recv.pBase64EncodedPayload,
+            recv.base64EncodedPayloadLength);
+        if (0 != b64_rc) {
+            printf("[signaling] ICE_CANDIDATE base64 decode failed: -0x%04x (len=%u)\n",
+                   -b64_rc, (unsigned) recv.base64EncodedPayloadLength);
+            return;
+        }
+        // ICE controller is initialized after signaling_send_answer in
+        // run_session — ICE_CANDIDATE frames that arrive before then are
+        // dropped here (Ice_AddRemoteCandidate would fail anyway). Once the
+        // controller is up the frames feed straight through.
+        (void) ice_controller_add_remote_candidate_json((const char *) payload, decoded_len);
+        return;
+    }
+
     if (SIGNALING_TYPE_MESSAGE_SDP_OFFER != recv.messageType) {
-        // Increment D+ will route ICE_CANDIDATE / GO_AWAY through.
+        // GO_AWAY / RECONNECT_ICE_SERVER / STATUS_RESPONSE land later.
         return;
     }
 
@@ -908,7 +938,53 @@ static void dispatch_text_frame(SignalingHandle sig, const uint8_t *msg, size_t 
         return;
     }
     sig->offer_sdp_buf[decoded_len] = '\0';
-    sig->offer_sdp_len = decoded_len;
+
+    // The base64-decoded payload is a JSON envelope: {"type":"offer","sdp":"<sdp>"}.
+    // Chrome / KVS escapes \r and \n inside the SDP as the two-byte literal
+    // sequences \r and \n. Unwrap + un-escape in place so callers see real
+    // SDP with real CR/LF.
+    char *p = strstr(sig->offer_sdp_buf, "\"sdp\":\"");
+    if (NULL == p) {
+        printf("[signaling] SDP_OFFER envelope missing \"sdp\" key\n");
+        return;
+    }
+    p += 7;     // past `"sdp":"`
+    char *dst = sig->offer_sdp_buf;
+    const char *src = p;
+    const char *end = sig->offer_sdp_buf + decoded_len;
+    bool closed = false;
+    while (src < end) {
+        char c = *src++;
+        if ('\\' == c && src < end) {
+            char esc = *src++;
+            switch (esc) {
+                case 'r':  *dst++ = '\r'; break;
+                case 'n':  *dst++ = '\n'; break;
+                case 't':  *dst++ = '\t'; break;
+                case '"':  *dst++ = '"';  break;
+                case '\\': *dst++ = '\\'; break;
+                case '/':  *dst++ = '/';  break;
+                default:
+                    // Unknown escape — keep literal so we can spot it in logs.
+                    *dst++ = '\\';
+                    *dst++ = esc;
+                    break;
+            }
+        } else if ('"' == c) {
+            // Closing quote of the "sdp" value.
+            closed = true;
+            break;
+        } else {
+            *dst++ = c;
+        }
+    }
+    if (!closed) {
+        printf("[signaling] SDP_OFFER envelope: unterminated \"sdp\" string\n");
+        return;
+    }
+    size_t sdp_len = (size_t)(dst - sig->offer_sdp_buf);
+    sig->offer_sdp_buf[sdp_len] = '\0';
+    sig->offer_sdp_len = sdp_len;
     sig->offer_ready = true;
 }
 
@@ -1252,6 +1328,39 @@ out:
     return rc;
 }
 
+int signaling_tick(SignalingHandle sig) {
+    if (NULL == sig || !sig->connected || NULL == sig->ws_ctx) {
+        return -1;
+    }
+    if (sig->transport_error) {
+        return -1;
+    }
+    if (wslay_event_want_write(sig->ws_ctx)) {
+        int wrc = wslay_event_send(sig->ws_ctx);
+        if (0 != wrc) {
+            printf("[sig] tick: wslay_event_send rc=%d\n", wrc);
+            return -1;
+        }
+    }
+    if (wslay_event_want_read(sig->ws_ctx)) {
+        int wrc = wslay_event_recv(sig->ws_ctx);
+        if (0 != wrc) {
+            printf("[sig] tick: wslay_event_recv rc=%d\n", wrc);
+            return -1;
+        }
+    }
+    if (sig->transport_error) {
+        return -1;
+    }
+    if (!wslay_event_want_read(sig->ws_ctx) && !wslay_event_want_write(sig->ws_ctx)) {
+        // Peer closed cleanly.
+        printf("[sig] tick: peer close (read+write disabled)\n");
+        return -1;
+    }
+    return 0;
+}
+
+
 int signaling_send_answer(SignalingHandle sig, const char *sdp_answer) {
     if (NULL == sig || NULL == sdp_answer || !sig->connected || NULL == sig->ws_ctx) {
         return -1;
@@ -1343,5 +1452,117 @@ int signaling_send_answer(SignalingHandle sig, const char *sdp_answer) {
     }
 
     printf("[webrtc] WS answer sent (%u envelope bytes)\n", (unsigned) env_len);
+    return 0;
+}
+
+int signaling_send_ice_candidate(
+    SignalingHandle sig,
+    const char *candidate,
+    const char *sdp_mid,
+    int sdp_m_line_index
+) {
+    if (NULL == sig || NULL == candidate || NULL == sdp_mid
+        || !sig->connected || NULL == sig->ws_ctx) {
+        return -1;
+    }
+    if (sig->transport_error) {
+        printf("[signaling] send_ice_candidate: transport already in error\n");
+        return -1;
+    }
+
+    /* Build the inner JSON payload that the browser's signaling layer parses
+     * into RTCIceCandidateInit. The senderClientId / messagePayload envelope
+     * the upstream lib adds wraps this. */
+    size_t cand_len = strlen(candidate);
+    size_t mid_len  = strlen(sdp_mid);
+    /* Skeleton: {"candidate":"","sdpMid":"","sdpMLineIndex":N} ~ 50 B + N digits. */
+    size_t json_cap = cand_len + mid_len + 64;
+    char *json_buf = malloc(json_cap);
+    if (NULL == json_buf) {
+        printf("[signaling] OOM for ice candidate JSON (%u bytes)\n", (unsigned) json_cap);
+        return -1;
+    }
+    int json_len = snprintf(json_buf, json_cap,
+        "{\"candidate\":\"%s\",\"sdpMid\":\"%s\",\"sdpMLineIndex\":%d}",
+        candidate, sdp_mid, sdp_m_line_index);
+    if (json_len <= 0 || (size_t) json_len >= json_cap) {
+        printf("[signaling] ice candidate JSON overflow\n");
+        free(json_buf);
+        return -1;
+    }
+
+    size_t b64_cap = 4 * (((size_t) json_len + 2) / 3) + 1;
+    char *b64_buf = malloc(b64_cap);
+    if (NULL == b64_buf) {
+        printf("[signaling] OOM for ice b64 buffer (%u bytes)\n", (unsigned) b64_cap);
+        free(json_buf);
+        return -1;
+    }
+    size_t b64_len = 0;
+    int b64_rc = mbedtls_base64_encode((unsigned char *) b64_buf, b64_cap, &b64_len,
+                                       (const unsigned char *) json_buf, (size_t) json_len);
+    free(json_buf);
+    if (0 != b64_rc) {
+        printf("[signaling] ice candidate base64 encode failed: -0x%04x\n", -b64_rc);
+        free(b64_buf);
+        return -1;
+    }
+
+    size_t env_cap = b64_len + sig->peer_client_id_len + 256;
+    char *env_buf = malloc(env_cap);
+    if (NULL == env_buf) {
+        printf("[signaling] OOM for ice envelope (%u bytes)\n", (unsigned) env_cap);
+        free(b64_buf);
+        return -1;
+    }
+    WssSendMessage_t send_msg = {
+        .messageType                = SIGNALING_TYPE_MESSAGE_ICE_CANDIDATE,
+        .pRecipientClientId         = sig->peer_client_id,
+        .recipientClientIdLength    = sig->peer_client_id_len,
+        .pBase64EncodedMessage      = b64_buf,
+        .base64EncodedMessageLength = b64_len,
+        .pCorrelationId             = NULL,
+        .correlationIdLength        = 0,
+    };
+    size_t env_len = env_cap;
+    SignalingResult_t sig_rc = Signaling_ConstructWssMessage(&send_msg, env_buf, &env_len);
+    free(b64_buf);
+    if (SIGNALING_RESULT_OK != sig_rc) {
+        printf("[signaling] ConstructWssMessage (ICE) failed: %d\n", (int) sig_rc);
+        free(env_buf);
+        return -1;
+    }
+
+    struct wslay_event_msg ws_msg = {
+        .opcode     = WSLAY_TEXT_FRAME,
+        .msg        = (const uint8_t *) env_buf,
+        .msg_length = env_len,
+    };
+    int wrc = wslay_event_queue_msg(sig->ws_ctx, &ws_msg);
+    free(env_buf);
+    if (0 != wrc) {
+        printf("[signaling] wslay_event_queue_msg (ICE) failed: %d\n", wrc);
+        return -1;
+    }
+
+    const TickType_t start = xTaskGetTickCount();
+    const TickType_t budget = pdMS_TO_TICKS(2000);
+    while (wslay_event_want_write(sig->ws_ctx)) {
+        wrc = wslay_event_send(sig->ws_ctx);
+        if (0 != wrc) {
+            printf("[signaling] wslay_event_send (ICE) failed: %d\n", wrc);
+            return -1;
+        }
+        if (sig->transport_error) {
+            return -1;
+        }
+        if ((xTaskGetTickCount() - start) >= budget) {
+            printf("[signaling] send_ice_candidate: drain timed out (>2 s)\n");
+            return -1;
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+
+    printf("[webrtc] WS ICE candidate sent (%u envelope bytes)\n", (unsigned) env_len);
     return 0;
 }
