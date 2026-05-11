@@ -552,6 +552,59 @@ int ice_controller_gather_host_candidates(SignalingHandle sig) {
 }
 
 
+int ice_controller_send_pending_pair_requests(void) {
+    if (!g_ice.initialized) {
+        return -1;
+    }
+    uint64_t now = current_time_seconds();
+    uint8_t stun_tx[ICE_STUN_TX_BUF];
+
+    /* TEMP instrumentation — strip when D4c is green. Print pair-table size
+     * only when it changes so we don't spam every tick. */
+    static size_t last_num_pairs = (size_t) -1;
+    if (g_ice.ctx.numCandidatePairs != last_num_pairs) {
+        printf("[ice/dbg] pair table now has %u pair(s)\n",
+               (unsigned) g_ice.ctx.numCandidatePairs);
+        last_num_pairs = g_ice.ctx.numCandidatePairs;
+    }
+
+    for (size_t i = 0; i < g_ice.ctx.numCandidatePairs; i++) {
+        IceCandidatePair_t *pair = &g_ice.ctx.pCandidatePairs[i];
+        size_t buf_len = sizeof(stun_tx);
+
+        IceResult_t r = Ice_CreateNextPairRequest(
+            &g_ice.ctx, pair, now, stun_tx, &buf_len);
+        if (ICE_RESULT_NO_NEXT_ACTION == r) {
+            continue;
+        }
+        if (ICE_RESULT_OK != r) {
+            printf("[ice] CreateNextPairRequest pair %u failed: %d\n",
+                   (unsigned) i, (int) r);
+            continue;
+        }
+        if (NULL == pair->pRemoteCandidate) {
+            continue;
+        }
+        /* TEMP instrumentation — strip when D4c is green. */
+        const uint8_t *a = pair->pRemoteCandidate->endpoint.transportAddress.address;
+        printf("[ice/dbg] pair %u check -> %u.%u.%u.%u:%u (len=%u)\n",
+               (unsigned) i, a[0], a[1], a[2], a[3],
+               (unsigned) pair->pRemoteCandidate->endpoint.transportAddress.port,
+               (unsigned) buf_len);
+        (void) send_stun_to_endpoint(&pair->pRemoteCandidate->endpoint, stun_tx, buf_len);
+    }
+    return 0;
+}
+
+
+const IceCandidatePair_t *ice_controller_get_nominated_pair(void) {
+    if (!g_ice.initialized) {
+        return NULL;
+    }
+    return g_ice.ctx.pNominatedPair;
+}
+
+
 int ice_controller_send_pending_requests(void) {
     if (!g_ice.initialized) {
         return -1;
@@ -581,12 +634,64 @@ int ice_controller_send_pending_requests(void) {
          * code path.) */
         if (ICE_CANDIDATE_TYPE_SERVER_REFLEXIVE == cand->candidateType
             && g_ice.stun_endpoint_resolved) {
+            /* TEMP instrumentation — strip when D4c is green. */
+            const uint8_t *a = g_ice.stun_endpoint.transportAddress.address;
+            printf("[ice/dbg] srflx binding req -> %u.%u.%u.%u:%u (len=%u)\n",
+                   a[0], a[1], a[2], a[3],
+                   (unsigned) g_ice.stun_endpoint.transportAddress.port,
+                   (unsigned) buf_len);
             if (0 != send_stun_to_endpoint(&g_ice.stun_endpoint, stun_tx, buf_len)) {
                 continue;
             }
         }
     }
     return 0;
+}
+
+
+/* Build and send a STUN binding success response for an incoming connectivity
+ * check. Called from the SEND_RESPONSE_FOR_REMOTE_REQUEST / SEND_TRIGGERED_CHECK
+ * branches of the switch below. The response goes back to pRemoteCandidate's
+ * endpoint, which the library populated from the recvfrom source address. */
+static void send_binding_response(const IceCandidatePair_t *pair, uint8_t *txn) {
+    if (NULL == pair || NULL == pair->pRemoteCandidate || NULL == txn) {
+        return;
+    }
+    uint8_t resp[ICE_STUN_TX_BUF];
+    size_t resp_len = sizeof(resp);
+    IceResult_t r = Ice_CreateResponseForRequest(
+        &g_ice.ctx, pair, txn, resp, &resp_len);
+    if (ICE_RESULT_OK != r) {
+        printf("[ice] CreateResponseForRequest failed: %d\n", (int) r);
+        return;
+    }
+    (void) send_stun_to_endpoint(&pair->pRemoteCandidate->endpoint, resp, resp_len);
+}
+
+
+/* Iteration order for pLocalCandidate when handling an incoming packet. The
+ * library matches the pair by both pLocalCandidate and pRemoteCandidateEndpoint
+ * transport addresses; with one UDP socket we don't know from recvfrom which
+ * local the remote aimed at. Walk host first (typical Chrome path on LAN),
+ * then srflx (STUN response or remote-side public check). Whichever yields
+ * the most informative result wins. */
+static IceCandidate_t *pick_local_candidate_by_index(size_t idx) {
+    size_t seen = 0;
+    /* Pass 1: host candidates. */
+    for (size_t i = 0; i < g_ice.ctx.numLocalCandidates; i++) {
+        if (ICE_CANDIDATE_TYPE_HOST == g_ice.ctx.pLocalCandidates[i].candidateType) {
+            if (seen == idx) return &g_ice.ctx.pLocalCandidates[i];
+            seen++;
+        }
+    }
+    /* Pass 2: srflx. */
+    for (size_t i = 0; i < g_ice.ctx.numLocalCandidates; i++) {
+        if (ICE_CANDIDATE_TYPE_SERVER_REFLEXIVE == g_ice.ctx.pLocalCandidates[i].candidateType) {
+            if (seen == idx) return &g_ice.ctx.pLocalCandidates[i];
+            seen++;
+        }
+    }
+    return NULL;
 }
 
 
@@ -603,8 +708,8 @@ int ice_controller_handle_udp_packet(
     }
 
     /* Build the remote endpoint from the recvfrom() src — Ice_HandleStunPacket
-     * uses this to attribute the packet to the right pair (D4c) and to
-     * recognize the srflx address echoed back by the STUN server. */
+     * uses this to attribute the packet to the right pair and to recognize
+     * the srflx address echoed back by the STUN server. */
     IceEndpoint_t remote;
     memset(&remote, 0, sizeof(remote));
     if (NULL != from && AF_INET == ((const struct sockaddr_in *) from)->sin_family) {
@@ -616,24 +721,80 @@ int ice_controller_handle_udp_packet(
         return -1;
     }
 
-    /* Today we only have one local candidate per row that might own this
-     * packet (the srflx — its STUN response comes back from stun.kinesisvideo).
-     * D4c will need a real candidate-to-fd map; for now, pass the srflx
-     * candidate explicitly when it exists. Ice_HandleStunPacket only uses
-     * pLocalCandidate for connectivity-check accounting. */
-    IceCandidate_t *local_cand = NULL;
-    for (size_t i = 0; i < g_ice.ctx.numLocalCandidates; i++) {
-        if (ICE_CANDIDATE_TYPE_SERVER_REFLEXIVE == g_ice.ctx.pLocalCandidates[i].candidateType) {
-            local_cand = &g_ice.ctx.pLocalCandidates[i];
-            break;
-        }
+    /* TEMP instrumentation — strip when D4c is green. */
+    {
+        const uint8_t *a = remote.transportAddress.address;
+        printf("[ice/dbg] udp in: first=0x%02x len=%u from %u.%u.%u.%u:%u\n",
+               (unsigned) buf[0], (unsigned) len,
+               a[0], a[1], a[2], a[3], (unsigned) remote.transportAddress.port);
     }
 
+    /* The library expects the caller to know which local candidate the
+     * incoming packet belongs to (N6 has one socket per local candidate,
+     * so the socket context carries pLocalCandidate). We collapsed to a
+     * single UDP socket per D4 architecture, so recvfrom can't tell us.
+     *
+     * Peek the STUN message type (bytes [0..1], network byte order) to
+     * dispatch:
+     *   0x0101 BINDING_SUCCESS_RESPONSE — only source in our world is the
+     *          STUN server replying to our srflx binding request. Pass srflx.
+     *   0x0001 BINDING_REQUEST — Chrome's connectivity check. Library
+     *          matches by pair (local + remote endpoints), not by txn-id,
+     *          so the host-first retry is safe (no state corruption). Walk
+     *          host then srflx until we get a non-fallthrough result.
+     *
+     * A previous attempt walked locals for both message types, but the
+     * library mutates the srflx txn-id store on the first call: when we
+     * passed host first for a SUCCESS_RESPONSE, the library matched the
+     * txn-id, rejected host as wrong candidate type (rc=17), and removed
+     * the id from the store anyway. The srflx retry then got rc=20
+     * (PAIR_NOT_FOUND) because the id was already gone. */
+    bool is_response = (len >= 2 && 0x01 == buf[0] && 0x01 == buf[1]);
+
+    IceHandleStunPacketResult_t r = ICE_HANDLE_STUN_PACKET_RESULT_BAD_PARAM;
+    IceCandidate_t *local_cand = NULL;
     uint8_t *txn = NULL;
     IceCandidatePair_t *pair = NULL;
-    IceHandleStunPacketResult_t r = Ice_HandleStunPacket(
-        &g_ice.ctx, buf, len, local_cand, &remote,
-        current_time_seconds(), &txn, &pair);
+
+    if (is_response) {
+        /* Pass srflx directly. */
+        for (size_t i = 0; i < g_ice.ctx.numLocalCandidates; i++) {
+            if (ICE_CANDIDATE_TYPE_SERVER_REFLEXIVE == g_ice.ctx.pLocalCandidates[i].candidateType) {
+                local_cand = &g_ice.ctx.pLocalCandidates[i];
+                break;
+            }
+        }
+        if (NULL != local_cand) {
+            r = Ice_HandleStunPacket(
+                &g_ice.ctx, buf, len, local_cand, &remote,
+                current_time_seconds(), &txn, &pair);
+            /* TEMP instrumentation — strip when D4c is green. */
+            printf("[ice/dbg] HandleStunPacket (response) local=srflx rc=%d pair=%p\n",
+                   (int) r, (void *) pair);
+        }
+    } else {
+        /* Binding request or other — walk locals. Host first matches Chrome's
+         * typical LAN check; srflx fallback handles public-side checks. */
+        for (size_t i = 0; ; i++) {
+            local_cand = pick_local_candidate_by_index(i);
+            if (NULL == local_cand) {
+                break;
+            }
+            txn = NULL;
+            pair = NULL;
+            r = Ice_HandleStunPacket(
+                &g_ice.ctx, buf, len, local_cand, &remote,
+                current_time_seconds(), &txn, &pair);
+            /* TEMP instrumentation — strip when D4c is green. */
+            printf("[ice/dbg] HandleStunPacket (request) local=%s rc=%d pair=%p\n",
+                   (ICE_CANDIDATE_TYPE_HOST == local_cand->candidateType) ? "host" : "srflx",
+                   (int) r, (void *) pair);
+            if (ICE_HANDLE_STUN_PACKET_RESULT_CANDIDATE_PAIR_NOT_FOUND != r
+             && ICE_HANDLE_STUN_PACKET_RESULT_INVALID_CANDIDATE_TYPE != r) {
+                break;
+            }
+        }
+    }
 
     switch (r) {
         case ICE_HANDLE_STUN_PACKET_RESULT_UPDATED_SERVER_REFLEXIVE_CANDIDATE_ADDRESS:
@@ -647,22 +808,86 @@ int ice_controller_handle_udp_packet(
                 }
             }
             break;
+
+        case ICE_HANDLE_STUN_PACKET_RESULT_SEND_RESPONSE_FOR_REMOTE_REQUEST:
+            /* Chrome's connectivity check. Library has matched the pair and
+             * built a transaction id; we serialize the response and send it
+             * back to pRemoteCandidate's endpoint (recvfrom source). */
+            send_binding_response(pair, txn);
+            break;
+
+        case ICE_HANDLE_STUN_PACKET_RESULT_SEND_TRIGGERED_CHECK:
+            /* Two-step per library docs (ice_api_private.c:1492-1503): we owe
+             * Chrome a response now, AND we need to send our own connectivity
+             * check on this pair. The next tick's
+             * ice_controller_send_pending_pair_requests pass picks up the
+             * outgoing check via Ice_CreateNextPairRequest; do the response
+             * here so it goes out without a tick delay. */
+            send_binding_response(pair, txn);
+            break;
+
+        case ICE_HANDLE_STUN_PACKET_RESULT_SEND_RESPONSE_AND_START_NOMINATION:
+            /* Only the controlling side actually starts nomination. We're
+             * controlled; this shouldn't fire. Send the response anyway and
+             * log so we see the surprise. */
+            send_binding_response(pair, txn);
+            printf("[ice] unexpected SEND_RESPONSE_AND_START_NOMINATION (we're controlled)\n");
+            break;
+
+        case ICE_HANDLE_STUN_PACKET_RESULT_START_NOMINATION:
+            /* Controlling-side action. Logged for symmetry. */
+            printf("[ice] unexpected START_NOMINATION (we're controlled)\n");
+            break;
+
+        case ICE_HANDLE_STUN_PACKET_RESULT_VALID_CANDIDATE_PAIR:
+            if (NULL != pair && NULL != pair->pLocalCandidate && NULL != pair->pRemoteCandidate) {
+                const uint8_t *la = pair->pLocalCandidate->endpoint.transportAddress.address;
+                const uint8_t *ra = pair->pRemoteCandidate->endpoint.transportAddress.address;
+                printf("[ice] pair valid: local %u.%u.%u.%u:%u <-> remote %u.%u.%u.%u:%u\n",
+                       la[0], la[1], la[2], la[3],
+                       (unsigned) pair->pLocalCandidate->endpoint.transportAddress.port,
+                       ra[0], ra[1], ra[2], ra[3],
+                       (unsigned) pair->pRemoteCandidate->endpoint.transportAddress.port);
+            }
+            break;
+
+        case ICE_HANDLE_STUN_PACKET_RESULT_CANDIDATE_PAIR_READY:
+            /* Pair has completed the 4-way handshake. If Chrome already sent
+             * USE-CANDIDATE the library transitioned state to SUCCEEDED and
+             * set pNominatedPair; the tick loop polls that and exits. Quiet
+             * one-line log is enough. */
+            printf("[ice] pair ready (4-way handshake complete)\n");
+            break;
+
         case ICE_HANDLE_STUN_PACKET_RESULT_NOT_STUN_PACKET:
             /* DTLS/RTP — not our gate yet. Caller (run_session) should have
              * already first-byte-demuxed this away from us, so log if it
              * leaks through. */
             printf("[ice] non-STUN packet reached handler (first byte 0x%02x)\n", (unsigned) buf[0]);
             break;
+
         case ICE_HANDLE_STUN_PACKET_RESULT_OK:
         case ICE_HANDLE_STUN_PACKET_RESULT_MATCHING_TRANSACTION_ID_NOT_FOUND:
             /* Quiet success / known-uninteresting. */
             break;
+
         case ICE_HANDLE_STUN_PACKET_RESULT_CANDIDATE_PAIR_NOT_FOUND:
-            /* Chrome's connectivity-check STUN binding requests arrive on
-             * our UDP socket as soon as it has our host candidate. Until D4c
-             * runs the pair-check loop and pairs exist, the library can't
-             * attribute these and returns rc=20. Quiet drop — expected. */
+        case ICE_HANDLE_STUN_PACKET_RESULT_INVALID_CANDIDATE_TYPE:
+            /* Iteration exhausted without finding the matching local
+             * candidate. PAIR_NOT_FOUND fires when no pair exists yet;
+             * INVALID_CANDIDATE_TYPE fires from
+             * Ice_HandleServerReflexiveResponse when a srflx binding-response
+             * arrives but no local was the srflx (or it already resolved
+             * and txn-id store has stale entries). Quiet drop in both cases. */
             break;
+
+        case ICE_HANDLE_STUN_PACKET_RESULT_INTEGRITY_MISMATCH:
+            /* Loud — likely a cred-plumbing bug. ufrag/pwd mismatch between
+             * what we put in the SDP answer and what the library uses for
+             * HMAC validation. */
+            printf("[ice] STUN integrity mismatch — check ICE creds plumbing\n");
+            break;
+
         default:
             printf("[ice] Ice_HandleStunPacket rc=%d\n", (int) r);
             break;

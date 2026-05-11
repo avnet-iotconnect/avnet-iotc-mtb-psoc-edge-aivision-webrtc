@@ -162,6 +162,14 @@ static void run_tick_loop(SignalingHandle sig, int udp_fd) {
         }
 
         (void) ice_controller_send_pending_requests();
+        (void) ice_controller_send_pending_pair_requests();
+
+        // D4c exit: once the ICE library has selected a nominated pair,
+        // exit cleanly so run_session can hand off to D5 (DTLS handshake).
+        if (NULL != ice_controller_get_nominated_pair()) {
+            printf("[webrtc] ICE pair nominated — exiting tick loop (D5 takes over)\n");
+            return;
+        }
 
         for (;;) {
             struct sockaddr_in from;

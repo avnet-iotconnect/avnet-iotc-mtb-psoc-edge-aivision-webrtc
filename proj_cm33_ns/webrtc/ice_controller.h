@@ -15,6 +15,11 @@
  * still compile against this header. ice_controller.c includes lwIP itself. */
 struct sockaddr;
 
+/* Forward-declare so the nominated-pair getter has a return type without
+ * forcing every TU that includes this header to drag in ice_data_types.h.
+ * Pair fields are opaque to consumers — only the .c file dereferences. */
+typedef struct IceCandidatePair IceCandidatePair_t;
+
 /* ICE controller. PILOT.md §3.1 D4 architecture: single-viewer, single
  * UDP socket, file-scope state, no per-session malloc. STUN-only (region-
  * templated) — no TURN, no IPv6, no TCP candidates.
@@ -72,6 +77,20 @@ int ice_controller_gather_host_candidates(SignalingHandle sig);
  * the shared UDP fd to the candidate's STUN server endpoint. No-op once all
  * srflx have resolved. Returns 0 on success. */
 int ice_controller_send_pending_requests(void);
+
+/* Walk candidate pairs with pending work (connectivity checks, nominations).
+ * For each, call Ice_CreateNextPairRequest and sendto on the shared UDP fd
+ * to pRemoteCandidate's endpoint. Library returns ICE_RESULT_NO_NEXT_ACTION
+ * for pairs whose retransmit timer hasn't fired yet — quiet skip.
+ * Returns 0 on success. */
+int ice_controller_send_pending_pair_requests(void);
+
+/* Return the nominated pair once the ICE library has selected one. NULL until
+ * then. As the controlled side, nomination happens inside Ice_HandleStunPacket
+ * when Chrome's binding request carries USE-CANDIDATE and the 4-way handshake
+ * completes; the library writes pContext->pNominatedPair. This getter is the
+ * exit signal the tick loop polls so run_session can hand off to D5. */
+const IceCandidatePair_t *ice_controller_get_nominated_pair(void);
 
 /* Route an incoming UDP packet (first byte 0..3 — STUN) through Ice_HandleStunPacket.
  * If the result is ICE_HANDLE_STUN_PACKET_RESULT_UPDATED_SERVER_REFLEXIVE_CANDIDATE_ADDRESS,
