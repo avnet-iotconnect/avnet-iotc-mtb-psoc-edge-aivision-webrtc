@@ -20,6 +20,8 @@
 #include "task.h"
 
 #include "lwip/sockets.h"
+#include "lwip/netif.h"
+#include "lwip/ip4_addr.h"
 
 #include "iotconnect.h"
 #include "iotcl.h"
@@ -298,16 +300,140 @@ static int run_session(void) {
     if (0 == wait_rc) {
         printf("[webrtc] WS offer received (%u bytes of SDP)\n", (unsigned) offer_len);
 
-        // Build the SDP answer from the captured offer + D1 fingerprint + fresh
-        // ICE creds. Stack-allocated per GUIDELINES.md buffer rules: fixed size,
-        // single-stage transient, no cleanup path. Body is typically ~600-900 B;
-        // 1536 B leaves headroom and matches the verified D2 smoke shape.
+        // D4c: Proper sequencing per RFC 8839. Open socket first, gather candidates,
+        // then build and send answer.
+        if (0 != dtls_transport_open_socket(dt)) {
+            printf("[webrtc] dtls_transport_open_socket failed\n");
+            signaling_disconnect(sig);
+            free(offer_sdp);
+            dtls_transport_destroy(dt);
+            return -1;
+        }
+
+        // Extract the actual port device is bound to
+        struct sockaddr_in bound;
+        socklen_t bound_len = sizeof(bound);
+        if (getsockname(dtls_transport_get_socket(dt), (struct sockaddr *) &bound, &bound_len) < 0) {
+            printf("[webrtc] getsockname failed\n");
+            signaling_disconnect(sig);
+            free(offer_sdp);
+            dtls_transport_destroy(dt);
+            return -1;
+        }
+        uint16_t local_port = ntohs(bound.sin_port);
+        printf("[webrtc] local port: %u\n", (unsigned) local_port);
+
+        // Scrape remote ufrag/pwd from the offer early, before any ICE operations
+        PeerConnectionRemoteIceCreds remote_ice_creds = { 0 };
+        if (0 != peer_connection_extract_remote_ice_creds(offer_sdp, offer_len, &remote_ice_creds)) {
+            printf("[webrtc] could not extract remote ufrag/pwd from offer\n");
+            signaling_disconnect(sig);
+            free(offer_sdp);
+            dtls_transport_destroy(dt);
+            return -1;
+        }
+
+        // Generate fresh ICE creds for this session
+        char ufrag[16] = { 0 };
+        char pwd[32] = { 0 };
+        if (0 != webrtc_csprng_bytes((uint8_t *) ufrag, 8)) {
+            printf("[webrtc] csprng for ufrag failed\n");
+            signaling_disconnect(sig);
+            free(offer_sdp);
+            dtls_transport_destroy(dt);
+            return -1;
+        }
+        if (0 != webrtc_csprng_bytes((uint8_t *) pwd, 24)) {
+            printf("[webrtc] csprng for pwd failed\n");
+            signaling_disconnect(sig);
+            free(offer_sdp);
+            dtls_transport_destroy(dt);
+            return -1;
+        }
+        // Convert to alnum (simplified: just use hex)
+        for (int i = 0; i < 8; i++) {
+            ufrag[i] = "abcdefghijklmnopqrstuvwxyz0123456789"[ufrag[i] % 36];
+        }
+        for (int i = 0; i < 24; i++) {
+            pwd[i] = "abcdefghijklmnopqrstuvwxyz0123456789"[pwd[i] % 36];
+        }
+        ufrag[8] = '\0';
+        pwd[24] = '\0';
+
+        // Init ICE controller with creds and socket
+        if (0 != ice_controller_init(
+                            dtls_transport_get_socket(dt), region_buf,
+                            (const uint8_t *) ufrag, 8,
+                            (const uint8_t *) pwd, 24,
+                            (const uint8_t *) remote_ice_creds.ufrag, remote_ice_creds.ufrag_len,
+                            (const uint8_t *) remote_ice_creds.pwd,   remote_ice_creds.pwd_len)) {
+            printf("[webrtc] ice_controller_init failed\n");
+            signaling_disconnect(sig);
+            free(offer_sdp);
+            dtls_transport_destroy(dt);
+            return -1;
+        }
+
+        ice_started = true;
+
+        // Gather host candidates before building answer
+        if (0 != ice_controller_gather_host_candidates(sig)) {
+            printf("[webrtc] ice_controller_gather_host_candidates failed\n");
+            signaling_disconnect(sig);
+            free(offer_sdp);
+            dtls_transport_destroy(dt);
+            return -1;
+        }
+
+        // Extract device's local IP for answer SDP o= and c= lines
+        char local_ip[16] = { 0 };
+        struct netif *nif;
+        NETIF_FOREACH(nif) {
+            if (nif->name[0] == 'l' && nif->name[1] == 'o') {
+                continue;
+            }
+            if (!netif_is_up(nif) || !netif_is_link_up(nif)) {
+                continue;
+            }
+            const ip4_addr_t *ip4 = netif_ip4_addr(nif);
+            if (NULL == ip4 || ip4->addr == 0) {
+                continue;
+            }
+            uint32_t addr = ip4->addr;
+            int n = snprintf(local_ip, sizeof(local_ip), "%u.%u.%u.%u",
+                           (unsigned) (addr & 0xFF),
+                           (unsigned) ((addr >> 8) & 0xFF),
+                           (unsigned) ((addr >> 16) & 0xFF),
+                           (unsigned) ((addr >> 24) & 0xFF));
+            if (n > 0 && (size_t) n < sizeof(local_ip)) {
+                break;
+            }
+            memset(local_ip, 0, sizeof(local_ip));
+        }
+        if (0 == local_ip[0]) {
+            printf("[webrtc] could not extract local IP from netif\n");
+            signaling_disconnect(sig);
+            free(offer_sdp);
+            dtls_transport_destroy(dt);
+            return -1;
+        }
+
+        // Now build the SDP answer. At this point ICE has our host candidate.
+        // Stack-allocated per GUIDELINES.md buffer rules: fixed size, single-stage
+        // transient, no cleanup path. Body is typically ~600-900 B; 1536 B headroom.
         char answer_buf[1536];
         size_t answer_len = 0;
         PeerConnectionLocalIceCreds local_ice_creds = { 0 };
+        local_ice_creds.ufrag_len = 8;
+        local_ice_creds.pwd_len = 24;
+        memcpy(local_ice_creds.ufrag, ufrag, 8);
+        memcpy(local_ice_creds.pwd, pwd, 24);
+
         int build_rc = peer_connection_build_answer(
             dt,
             offer_sdp, offer_len,
+            local_ip,
+            local_port,
             answer_buf, sizeof(answer_buf) - 1,
             &answer_len,
             &local_ice_creds
@@ -316,45 +442,27 @@ static int run_session(void) {
             // signaling_send_answer takes a NUL-terminated string (calls strlen);
             // the serializer writes body bytes only. NUL-terminate in place.
             answer_buf[answer_len] = '\0';
+            printf("[webrtc] answer SDP hex (first 128 bytes):\n");
+            for (size_t i = 0; i < (answer_len < 128 ? answer_len : 128); i++) {
+                printf("%02x ", (unsigned char)answer_buf[i]);
+                if ((i + 1) % 16 == 0) printf("\n");
+            }
+            printf("\n");
             int send_rc = signaling_send_answer(sig, answer_buf);
+            printf("[webrtc] signaling_send_answer rc=%d (answer_len=%u)\n", send_rc, (unsigned) answer_len);
             if (0 != send_rc) {
-                printf("[webrtc] signaling_send_answer failed rc=%d\n", send_rc);
+                printf("[webrtc] signaling_send_answer failed — connection may be down\n");
             } else {
-                // D4b: open the shared UDP socket, scrape remote ufrag/pwd from
-                // the offer, init the ICE controller, register the STUN server,
-                // trickle host candidate(s), then drop into the tick loop
-                // (wslay recv + UDP demux + 20 ms delay) until transport error
-                // or peer close. Per PILOT §3.1 D4 architecture: one socket
-                // owned by dtls_transport, file-scope ICE state, no second task.
-                // D4c adds the connectivity-check loop on top of this.
-                PeerConnectionRemoteIceCreds remote_ice_creds = { 0 };
-                if (0 != peer_connection_extract_remote_ice_creds(offer_sdp, offer_len, &remote_ice_creds)) {
-                    printf("[webrtc] could not extract remote ufrag/pwd from offer\n");
-                } else if (0 != dtls_transport_open_socket(dt)) {
-                    printf("[webrtc] dtls_transport_open_socket failed\n");
-                } else if (0 != ice_controller_init(
-                                    dtls_transport_get_socket(dt), region_buf,
-                                    (const uint8_t *) local_ice_creds.ufrag, local_ice_creds.ufrag_len,
-                                    (const uint8_t *) local_ice_creds.pwd,   local_ice_creds.pwd_len,
-                                    (const uint8_t *) remote_ice_creds.ufrag, remote_ice_creds.ufrag_len,
-                                    (const uint8_t *) remote_ice_creds.pwd,   remote_ice_creds.pwd_len)) {
-                    printf("[webrtc] ice_controller_init failed\n");
-                } else {
-                    ice_started = true;
-                    // Offer body has been consumed (build_answer + remote
-                    // cred scrape); free the 12 KB buffer before dropping
-                    // into the tick loop so wslay frame buffers + ICE rx
-                    // scratch don't compete with it on a tight heap.
-                    free(offer_sdp);
-                    offer_sdp = NULL;
-                    if (0 != ice_controller_gather_host_candidates(sig)) {
-                        printf("[webrtc] ice_controller_gather_host_candidates failed\n");
-                    }
-                    if (0 != ice_controller_add_stun_server()) {
-                        printf("[webrtc] ice_controller_add_stun_server failed — continuing host-only\n");
-                    }
-                    run_tick_loop(sig, dtls_transport_get_socket(dt));
+                // Answer sent. Continue with STUN server registration and tick loop.
+                // Offer body has been consumed; free the 12 KB buffer before dropping
+                // into the tick loop so wslay frame buffers + ICE rx scratch don't
+                // compete with it on a tight heap.
+                free(offer_sdp);
+                offer_sdp = NULL;
+                if (0 != ice_controller_add_stun_server()) {
+                    printf("[webrtc] ice_controller_add_stun_server failed — continuing host-only\n");
                 }
+                run_tick_loop(sig, dtls_transport_get_socket(dt));
             }
         } else {
             printf("[webrtc] peer_connection_build_answer failed rc=%d\n", build_rc);

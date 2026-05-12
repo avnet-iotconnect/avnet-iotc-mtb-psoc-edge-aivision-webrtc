@@ -96,12 +96,15 @@ int peer_connection_build_answer(
     DtlsTransportHandle dt,
     const char *offer,
     size_t offer_len,
+    const char *local_ip,
+    uint16_t local_port,
     char *out,
     size_t cap,
     size_t *out_len,
     PeerConnectionLocalIceCreds *out_ice_creds
 ) {
-    if (NULL == dt || NULL == offer || 0U == offer_len || NULL == out || NULL == out_len || cap < 256U) {
+    if (NULL == dt || NULL == offer || 0U == offer_len || NULL == local_ip ||
+        NULL == out || NULL == out_len || cap < 256U) {
         printf("[pc] build_answer bad args\n");
         return -1;
     }
@@ -157,13 +160,13 @@ int peer_connection_build_answer(
         return -1;
     }
 
-    // o=- <session_id> 2 IN IP4 127.0.0.1
-    // Hand-built via AddBuffer because AddOriginator uses %llu (newlib-nano
-    // crashes on that). AddBuffer just writes "<type>=<value>\r\n" verbatim.
+    // o=- <session_id> 2 IN IP4 <local_ip>
+    // Device's local IP. Hand-built via AddBuffer because AddOriginator uses
+    // %llu (newlib-nano crashes on that).
     char origin_line[64];
     int n = snprintf(
         origin_line, sizeof(origin_line),
-        "- %u 2 IN IP4 127.0.0.1", (unsigned) session_id
+        "- %u 2 IN IP4 %s", (unsigned) session_id, local_ip
     );
     if (n <= 0 || (size_t) n >= sizeof(origin_line)) {
         printf("[pc] format o= line failed: n=%d\n", n);
@@ -191,21 +194,21 @@ int peer_connection_build_answer(
         return -1;
     }
 
-    // Session-level attributes. group:BUNDLE 0 — we have one m-line, mid 0.
+    // Session-level attributes. group:BUNDLE 0 1 — both m-lines under one transport.
     // msid-semantic:WMS * — declares the MSID grouping but doesn't enumerate
     // tracks; KVS / Chrome accept this short form.
-    if (0 != add_attr(&sctx, "group", "BUNDLE 0", "add a=group")) { return -1; }
+    if (0 != add_attr(&sctx, "group", "BUNDLE 0 1", "add a=group")) { return -1; }
     if (0 != add_attr(&sctx, "msid-semantic", " WMS *", "add a=msid-semantic")) { return -1; }
 
-    // m=video 9 UDP/TLS/RTP/SAVPF 96
-    // Port 9 is the SDP "discard" port — actual port comes from ICE candidates.
+    // m=video <local_port> UDP/TLS/RTP/SAVPF 96
+    // Real UDP port device is bound to.
     SdpMedia_t media;
     static const char MEDIA_VIDEO[] = "video";
     static const char MEDIA_PROTO[] = "UDP/TLS/RTP/SAVPF";
     static const char MEDIA_FMT[] = "96";
     media.pMedia = MEDIA_VIDEO;
     media.mediaLength = sizeof(MEDIA_VIDEO) - 1;
-    media.port = 9U;
+    media.port = (uint32_t) local_port;
     media.portNum = 0U;
     media.pProtocol = MEDIA_PROTO;
     media.protocolLength = sizeof(MEDIA_PROTO) - 1;
@@ -213,24 +216,23 @@ int peer_connection_build_answer(
     media.fmtLength = sizeof(MEDIA_FMT) - 1;
     rc = SdpSerializer_AddMedia(&sctx, SDP_TYPE_MEDIA, &media);
     if (SDP_RESULT_OK != rc) {
-        printf("[pc] add m= failed: 0x%08x\n", (unsigned) rc);
+        printf("[pc] add m=video failed: 0x%08x\n", (unsigned) rc);
         return -1;
     }
 
-    // c=IN IP4 0.0.0.0 — placeholder, overridden by ICE candidates.
+    // c=IN IP4 <local_ip> — device's local address for initial connectivity attempt.
     SdpConnectionInfo_t conn;
     conn.networkType = SDP_NETWORK_IN;
     conn.addressType = SDP_ADDRESS_IPV4;
-    static const char CONN_ADDR[] = "0.0.0.0";
-    conn.pAddress = CONN_ADDR;
-    conn.addressLength = sizeof(CONN_ADDR) - 1;
+    conn.pAddress = local_ip;
+    conn.addressLength = strlen(local_ip);
     rc = SdpSerializer_AddConnectionInfo(&sctx, SDP_TYPE_CONNINFO, &conn);
     if (SDP_RESULT_OK != rc) {
-        printf("[pc] add c= failed: 0x%08x\n", (unsigned) rc);
+        printf("[pc] add c= (video) failed: 0x%08x\n", (unsigned) rc);
         return -1;
     }
 
-    // Media-level attributes. Order roughly mirrors Chrome's own answers.
+    // Media-level attributes for video. Order roughly mirrors Chrome's own answers.
     // - rtcp:9 IN IP4 0.0.0.0 — RTCP mux uses the same port; placeholder addr.
     // - ice-ufrag / ice-pwd / ice-options:trickle — ICE creds and trickle.
     // - fingerprint — DTLS-SRTP cert fingerprint from D1.
@@ -242,18 +244,50 @@ int peer_connection_build_answer(
     // - rtpmap:96 H264/90000 — payload type binding.
     // - fmtp:96 H264 params — packetization-mode=1 (NAL+FU-A), constrained
     //   baseline level 3.1 (42e01f), level-asymmetry-allowed.
-    if (0 != add_attr(&sctx, "rtcp", "9 IN IP4 0.0.0.0", "add a=rtcp")) { return -1; }
-    if (0 != add_attr(&sctx, "ice-ufrag", ufrag, "add a=ice-ufrag")) { return -1; }
-    if (0 != add_attr(&sctx, "ice-pwd", pwd, "add a=ice-pwd")) { return -1; }
-    if (0 != add_attr(&sctx, "ice-options", "trickle", "add a=ice-options")) { return -1; }
-    if (0 != add_attr(&sctx, "fingerprint", fingerprint, "add a=fingerprint")) { return -1; }
-    if (0 != add_attr(&sctx, "setup", "active", "add a=setup")) { return -1; }
-    if (0 != add_attr(&sctx, "mid", "0", "add a=mid")) { return -1; }
-    if (0 != add_attr(&sctx, "sendonly", NULL, "add a=sendonly")) { return -1; }
-    if (0 != add_attr(&sctx, "rtcp-mux", NULL, "add a=rtcp-mux")) { return -1; }
-    if (0 != add_attr(&sctx, "rtcp-rsize", NULL, "add a=rtcp-rsize")) { return -1; }
-    if (0 != add_attr(&sctx, "rtpmap", "96 H264/90000", "add a=rtpmap")) { return -1; }
-    if (0 != add_attr(&sctx, "fmtp", "96 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f", "add a=fmtp")) { return -1; }
+    if (0 != add_attr(&sctx, "rtcp", "9 IN IP4 0.0.0.0", "add a=rtcp (video)")) { return -1; }
+    if (0 != add_attr(&sctx, "ice-ufrag", ufrag, "add a=ice-ufrag (video)")) { return -1; }
+    if (0 != add_attr(&sctx, "ice-pwd", pwd, "add a=ice-pwd (video)")) { return -1; }
+    if (0 != add_attr(&sctx, "ice-options", "trickle", "add a=ice-options (video)")) { return -1; }
+    if (0 != add_attr(&sctx, "fingerprint", fingerprint, "add a=fingerprint (video)")) { return -1; }
+    if (0 != add_attr(&sctx, "setup", "active", "add a=setup (video)")) { return -1; }
+    if (0 != add_attr(&sctx, "mid", "0", "add a=mid (video)")) { return -1; }
+    if (0 != add_attr(&sctx, "sendonly", NULL, "add a=sendonly (video)")) { return -1; }
+    if (0 != add_attr(&sctx, "rtcp-mux", NULL, "add a=rtcp-mux (video)")) { return -1; }
+    if (0 != add_attr(&sctx, "rtcp-rsize", NULL, "add a=rtcp-rsize (video)")) { return -1; }
+    if (0 != add_attr(&sctx, "rtpmap", "96 H264/90000", "add a=rtpmap (video)")) { return -1; }
+    if (0 != add_attr(&sctx, "fmtp", "96 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f", "add a=fmtp (video)")) { return -1; }
+
+    // m=audio 0 UDP/TLS/RTP/SAVPF 111 — rejected (port 0), but part of BUNDLE.
+    // No microphone on the device, so we reject the audio m-line entirely.
+    // BUNDLE still groups it, so Chrome knows to use the single transport (ICE/DTLS)
+    // from the video m-line.
+    static const char MEDIA_AUDIO[] = "audio";
+    static const char MEDIA_FMT_AUDIO[] = "111";
+    media.pMedia = MEDIA_AUDIO;
+    media.mediaLength = sizeof(MEDIA_AUDIO) - 1;
+    media.port = 0U;
+    media.portNum = 0U;
+    media.pProtocol = MEDIA_PROTO;
+    media.protocolLength = sizeof(MEDIA_PROTO) - 1;
+    media.pFmt = MEDIA_FMT_AUDIO;
+    media.fmtLength = sizeof(MEDIA_FMT_AUDIO) - 1;
+    rc = SdpSerializer_AddMedia(&sctx, SDP_TYPE_MEDIA, &media);
+    if (SDP_RESULT_OK != rc) {
+        printf("[pc] add m=audio failed: 0x%08x\n", (unsigned) rc);
+        return -1;
+    }
+
+    // c= for audio (required by SDP structure, even though audio is rejected).
+    rc = SdpSerializer_AddConnectionInfo(&sctx, SDP_TYPE_CONNINFO, &conn);
+    if (SDP_RESULT_OK != rc) {
+        printf("[pc] add c= (audio) failed: 0x%08x\n", (unsigned) rc);
+        return -1;
+    }
+
+    // Audio m-line attributes: minimal set because BUNDLE means this m-line
+    // reuses the transport (ICE/DTLS) from the video m-line. Only mid + codec info.
+    if (0 != add_attr(&sctx, "mid", "1", "add a=mid (audio)")) { return -1; }
+    if (0 != add_attr(&sctx, "rtpmap", "111 opus/48000/2", "add a=rtpmap (audio)")) { return -1; }
 
     const char *finalized = NULL;
     size_t finalized_len = 0;
@@ -289,6 +323,10 @@ int peer_connection_build_answer(
         "[pc] answer built: %u bytes (offer was %u bytes)\n",
         (unsigned) finalized_len, (unsigned) offer_len
     );
+
+    // Debug: log the answer SDP for inspection (will be removed once D4c is green).
+    printf("[pc] answer SDP:\r\n%.*s\r\n[pc] end answer\n", (int) finalized_len, finalized);
+
     return 0;
 }
 

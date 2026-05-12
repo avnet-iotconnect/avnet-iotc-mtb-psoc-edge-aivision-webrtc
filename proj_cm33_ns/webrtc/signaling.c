@@ -1365,12 +1365,18 @@ int signaling_tick(SignalingHandle sig) {
 
 int signaling_send_answer(SignalingHandle sig, const char *sdp_answer) {
     if (NULL == sig || NULL == sdp_answer || !sig->connected || NULL == sig->ws_ctx) {
+        printf("[signaling] send_answer: bad args or not connected (sig=%p, sdp=%p, connected=%d, ws=%p)\n",
+               (void*)sig, (void*)sdp_answer, sig ? (int)sig->connected : -1, sig ? (void*)sig->ws_ctx : NULL);
         return -1;
     }
     if (sig->transport_error) {
         printf("[signaling] send_answer: transport already in error\n");
         return -1;
     }
+    printf("[signaling] send_answer: peer_client_id='%.*s' (len=%u)\n",
+           (int)sig->peer_client_id_len, sig->peer_client_id,
+           (unsigned)sig->peer_client_id_len);
+    printf("[signaling] send_answer: starting (sdp_len=%u)\n", (unsigned) strlen(sdp_answer));
 
     size_t sdp_len = strlen(sdp_answer);
 
@@ -1390,6 +1396,8 @@ int signaling_send_answer(SignalingHandle sig, const char *sdp_answer) {
         free(b64_buf);
         return -1;
     }
+    printf("[signaling] send_answer b64_len=%u, first 64 chars: %.64s\n",
+           (unsigned) b64_len, b64_buf);
 
     // Wrap in the KVS WSS send envelope. JSON skeleton (action/keys/braces/
     // quotes/commas) is ~80 bytes; flat 256 leaves headroom for KVS docs drift.
@@ -1417,6 +1425,8 @@ int signaling_send_answer(SignalingHandle sig, const char *sdp_answer) {
         free(env_buf);
         return -1;
     }
+    printf("[signaling] send_answer envelope (first 256 bytes): %.*s\n",
+           (int)(env_len < 256 ? env_len : 256), env_buf);
 
     // Queue as a single WS text frame. wslay_event_omsg_non_fragmented_init
     // mallocs+memcpys the msg, so env_buf is safe to free immediately after.
@@ -1431,27 +1441,46 @@ int signaling_send_answer(SignalingHandle sig, const char *sdp_answer) {
         printf("[signaling] wslay_event_queue_msg failed: %d\n", wrc);
         return -1;
     }
+    printf("[signaling] send_answer: queued (%u bytes), draining wslay...\n", (unsigned) env_len);
 
     // Drive wslay_event_send until the queue drains. Bounded: AWS closes its
     // end fast if the answer is malformed (Increment C is a stub SDP), and a
-    // wedged TLS write must not block the caller forever.
+    // wedged TLS write must not block the caller forever. While draining the
+    // send queue, also pump wslay_event_recv to pull any incoming messages
+    // (e.g., browser's trickled candidates) so they don't back up in the TLS layer.
     const TickType_t start = xTaskGetTickCount();
     const TickType_t budget = pdMS_TO_TICKS(2000);
+    int loop_count = 0;
+    int recv_count = 0;
     while (wslay_event_want_write(sig->ws_ctx)) {
+        // Try to receive any pending messages first.
+        wrc = wslay_event_recv(sig->ws_ctx);
+        if (0 != wrc && wrc != WSLAY_ERR_WOULDBLOCK) {
+            printf("[signaling] wslay_event_recv during send_answer drain failed: %d\n", wrc);
+            return -1;
+        }
+        if (wrc == 0) {
+            recv_count++;
+        }
+
+        // Now send.
         wrc = wslay_event_send(sig->ws_ctx);
+        loop_count++;
         if (0 != wrc) {
-            printf("[signaling] wslay_event_send (answer) failed: %d\n", wrc);
+            printf("[signaling] wslay_event_send (answer) failed on loop %d: %d\n", loop_count, wrc);
             return -1;
         }
         if (sig->transport_error) {
+            printf("[signaling] send_answer: transport error during drain (loop %d)\n", loop_count);
             return -1;
         }
         if ((xTaskGetTickCount() - start) >= budget) {
-            printf("[signaling] send_answer: drain timed out (>2 s)\n");
+            printf("[signaling] send_answer: drain timed out after %d send loops, %d recv calls (>2 s)\n", loop_count, recv_count);
             return -1;
         }
         vTaskDelay(pdMS_TO_TICKS(20));
     }
+    printf("[signaling] send_answer: wslay drain complete (%d send loops, %d recv calls)\n", loop_count, recv_count);
 
     printf("[webrtc] WS answer sent (%u envelope bytes)\n", (unsigned) env_len);
     return 0;

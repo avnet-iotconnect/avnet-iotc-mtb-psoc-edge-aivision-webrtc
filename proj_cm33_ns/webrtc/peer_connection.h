@@ -57,6 +57,10 @@ int peer_connection_extract_remote_ice_creds(
  *                offer expects. Real offer-driven negotiation lands in a
  *                later increment.
  *   offer_len  - convenience; may differ from strlen(offer) if caller has it.
+ *   local_ip   - device's local IP for o= and c= lines (dotted quad, e.g.
+ *                "192.168.38.196").
+ *   local_port - UDP port device is bound to (from getsockname). Used in m=
+ *                line so browser knows the real port to connect to.
  *   out / cap  - caller-provided output scratch. The serialized SDP is written
  *                into [out, out + *out_len). cap should be >= ~1.5 KB to be
  *                safe; the answer body is typically ~600-900 B.
@@ -68,6 +72,8 @@ int peer_connection_build_answer(
     DtlsTransportHandle dt,
     const char *offer,
     size_t offer_len,
+    const char *local_ip,
+    uint16_t local_port,
     char *out,
     size_t cap,
     size_t *out_len,
