@@ -107,6 +107,29 @@ typedef struct IceController {
 
 static IceController_t g_ice;
 
+/* Pre-init holding pen for remote ICE candidates. Chrome trickles candidates
+ * the moment the offer is sent — they arrive at signaling.c before
+ * ice_controller_init runs (build_answer + send_answer happen in between).
+ * Pre-init candidates are stashed here as the raw decoded JSON payload and
+ * replayed through ice_controller_add_remote_candidate_json once init
+ * succeeds. Lives outside g_ice so the memset in _init doesn't wipe it.
+ *
+ * KVS / the browser may re-trickle the same candidate ~10x while waiting for
+ * our answer to be accepted; we don't dedupe here — Ice_AddRemoteCandidate
+ * rejects repeats on drain. The cap is sized for that retry burst plus a
+ * handful of distinct candidates, with a verbose log if it overflows. */
+#define ICE_PENDING_REMOTE_MAX        ( 16U )
+#define ICE_PENDING_REMOTE_PAYLOAD    ( 256U )
+
+typedef struct PendingRemoteCandidate {
+    char payload[ICE_PENDING_REMOTE_PAYLOAD];
+    size_t len;
+} PendingRemoteCandidate_t;
+
+static PendingRemoteCandidate_t g_pending_remote[ICE_PENDING_REMOTE_MAX];
+static size_t g_pending_remote_count;
+static size_t g_pending_remote_overflow;
+
 
 /* --------------------------------------------------------------------- */
 /* ICE crypto callbacks — minimal real impls.                            */
@@ -399,6 +422,21 @@ int ice_controller_init(
            udp_fd, g_ice.region,
            (unsigned) local_ufrag_len, (unsigned) local_pwd_len,
            (unsigned) remote_ufrag_len, (unsigned) remote_pwd_len);
+
+    /* Drain anything signaling.c stashed before init. Ice_AddRemoteCandidate
+     * filters duplicates by (protocol, ip, port, type), so the browser's
+     * retry burst naturally collapses on the way through. */
+    if (g_pending_remote_count > 0U) {
+        printf("[ice] draining %u pre-init remote candidate(s) (overflow=%u)\n",
+               (unsigned) g_pending_remote_count, (unsigned) g_pending_remote_overflow);
+        for (size_t i = 0; i < g_pending_remote_count; i++) {
+            (void) ice_controller_add_remote_candidate_json(
+                g_pending_remote[i].payload, g_pending_remote[i].len);
+        }
+        g_pending_remote_count = 0U;
+        g_pending_remote_overflow = 0U;
+        memset(g_pending_remote, 0, sizeof(g_pending_remote));
+    }
     return 0;
 }
 
@@ -1102,8 +1140,25 @@ static int parse_sdp_candidate(
 
 
 int ice_controller_add_remote_candidate_json(const char *payload, size_t len) {
-    if (!g_ice.initialized || NULL == payload || 0U == len) {
+    if (NULL == payload || 0U == len) {
         return -1;
+    }
+    if (!g_ice.initialized) {
+        /* Pre-init holding pen — see g_pending_remote declaration. */
+        if (len >= ICE_PENDING_REMOTE_PAYLOAD) {
+            printf("[ice] pre-init remote candidate too large (%u >= %u), dropped\n",
+                   (unsigned) len, (unsigned) ICE_PENDING_REMOTE_PAYLOAD);
+            return -1;
+        }
+        if (g_pending_remote_count >= ICE_PENDING_REMOTE_MAX) {
+            g_pending_remote_overflow++;
+            return -1;
+        }
+        PendingRemoteCandidate_t *slot = &g_pending_remote[g_pending_remote_count];
+        memcpy(slot->payload, payload, len);
+        slot->len = len;
+        g_pending_remote_count++;
+        return 0;
     }
 
     size_t cand_len = 0;

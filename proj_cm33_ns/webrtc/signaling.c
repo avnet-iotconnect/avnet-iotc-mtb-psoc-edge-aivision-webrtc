@@ -886,9 +886,11 @@ static void dispatch_text_frame(SignalingHandle sig, const uint8_t *msg, size_t 
             return;
         }
         // ICE controller is initialized after signaling_send_answer in
-        // run_session — ICE_CANDIDATE frames that arrive before then are
-        // dropped here (Ice_AddRemoteCandidate would fail anyway). Once the
-        // controller is up the frames feed straight through.
+        // run_session. ICE_CANDIDATE frames arriving before then are stashed
+        // by the controller's pre-init holding pen and replayed at the end of
+        // ice_controller_init. Once the controller is up the frames feed
+        // straight through. KVS/Chrome may retrickle the same candidate while
+        // waiting for our answer; Ice_AddRemoteCandidate dedupes on drain.
         (void) ice_controller_add_remote_candidate_json((const char *) payload, decoded_len);
         return;
     }
