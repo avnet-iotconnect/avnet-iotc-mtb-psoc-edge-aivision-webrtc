@@ -28,12 +28,12 @@
 
 #include "app_webrtc.h"
 
-#include "webrtc/aws_creds.h"
-#include "webrtc/csprng.h"
-#include "webrtc/dtls_transport.h"
-#include "webrtc/ice_controller.h"
-#include "webrtc/peer_connection.h"
-#include "webrtc/signaling.h"
+#include "aws_creds.h"
+#include "csprng.h"
+#include "dtls_transport.h"
+#include "ice_controller.h"
+#include "peer_connection.h"
+#include "signaling.h"
 
 // WSS endpoint buffer: "wss://m1.kinesisvideo.<region>.amazonaws.com" — 128 is plenty.
 #define APP_WEBRTC_WSS_ENDPOINT_LEN 256

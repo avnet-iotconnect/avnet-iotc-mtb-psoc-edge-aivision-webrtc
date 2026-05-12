@@ -20,7 +20,7 @@
 #include "mbedtls/ctr_drbg.h"
 #include "mbedtls/entropy.h"
 
-#include "webrtc/csprng.h"
+#include "csprng.h"
 
 // Personalization string for the DRBG. Mixed into the seed alongside the
 // hardware entropy. Project-stable so reseed across reboots stays distinct

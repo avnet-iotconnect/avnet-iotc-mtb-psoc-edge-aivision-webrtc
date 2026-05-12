@@ -9,7 +9,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "webrtc/signaling.h"
+#include "signaling.h"
 
 /* lwIP sockaddr forward-declare so callers that don't pull <lwip/sockets.h>
  * still compile against this header. ice_controller.c includes lwIP itself. */

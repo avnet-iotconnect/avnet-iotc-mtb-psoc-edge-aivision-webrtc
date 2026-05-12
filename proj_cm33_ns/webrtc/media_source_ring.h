@@ -6,7 +6,7 @@
 #ifndef WEBRTC_MEDIA_SOURCE_RING_H_
 #define WEBRTC_MEDIA_SOURCE_RING_H_
 
-#include "webrtc/peer_connection.h"
+#include "peer_connection.h"
 
 /* Drains the CM55->CM33 NAL ring (shared/include/video_ring.h) and feeds
  * each slot directly to PeerConnection_WriteFrame() - no copy. The ring

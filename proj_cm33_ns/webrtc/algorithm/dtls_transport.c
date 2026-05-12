@@ -36,8 +36,8 @@
  * "redefinition of timeval" — the toolchain is fine. See webrtc/config.h. */
 #include "lwip/sockets.h"
 
-#include "webrtc/csprng.h"
-#include "webrtc/dtls_transport.h"
+#include "csprng.h"
+#include "dtls_transport.h"
 
 // SHA-256 fingerprint formatted as "sha-256 AA:BB:..." is 7 + 32*3 = 103 chars
 // including the trailing NUL. Round up for cosmetic headroom.

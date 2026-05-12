@@ -32,9 +32,9 @@
 #include "ice_data_types.h"
 #include "transaction_id_store.h"
 
-#include "webrtc/csprng.h"
-#include "webrtc/ice_controller.h"
-#include "webrtc/signaling.h"
+#include "csprng.h"
+#include "ice_controller.h"
+#include "signaling.h"
 
 /* Pair table cap from PILOT §3.1: typical Chrome browser ships ~6 remote
  * candidates, we have 1 host + 1 srflx local → cross product fits in 12. */

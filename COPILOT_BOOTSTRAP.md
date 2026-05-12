@@ -10,7 +10,7 @@ Read MEMORY.md (index), then the files it lists.
 
 **2. Execute /refs**
 Defined in `.claude/commands/refs.md`. Read that file and follow it.
-Core: read PILOT.md, GUIDELINES.md, OPEN_QUESTIONS.md, CONTRIBUTING.md.
+Core: read PILOT.md, GUIDELINES.md, OPEN_QUESTIONS.md.
 STYLE-C.md (repo root) — load only when editing/creating source files we own.
 
 **3. /commands as slash commands**

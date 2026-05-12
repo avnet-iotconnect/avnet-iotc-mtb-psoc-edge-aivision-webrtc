@@ -9,7 +9,7 @@ When this doc says "top level," it means **top of the current scope**, not proje
   - From the project's perspective, `webrtc/` is one of the modules the project depends on.
   - From third-party / upstream protocol code's perspective, `webrtc/` *is* the application — it's the consuming code that drives the protocol libraries.
 - **WebRTC app code:** the files directly under `webrtc/` are our solution at the WebRTC-application layer. They orchestrate sessions, drive frames, and smoke-test the stack. They consume the three tiers underneath.
-- **Tiers:** `algorithm/`, `util/`, `glue/` — building blocks consumed by the WebRTC-app code.
+- **Tiers:** `algorithm/`, `util/`, `shim/` — building blocks consumed by the WebRTC-app code.
 
 ## Initial tree (canonical reference)
 
@@ -58,7 +58,7 @@ proj_cm33_ns/                       ← project root. THE app (project-level).
     │                                  timer_controller, message_queue, networking_utils.
     │                                  Each is a thin pure-C or FreeRTOS-wrapper utility.
     │
-    └── glue/                       ← shims adapting third-party to our system
+    └── shim/                       ← shims adapting third-party to our system
         ├── csprng.{c,h}            ← PSE84 hardware RNG → mbedTLS entropy callback. Provides
         │                              DRBG-grade randomness to mbedTLS-using algorithm code.
         │                              No upstream analog.
@@ -83,7 +83,7 @@ When a file in `algorithm/` is upstream-origin, the file keeps its upstream Apac
 
 Thin utilities used by `algorithm/` files. FreeRTOS wrappers (queues, timers), pure-C string and parsing helpers. Each is small enough to read in a sitting. Coming from upstream's `examples/{string_utils, timer_controller, message_queue, networking_utils}/` as algorithm files that depend on them are pulled in.
 
-### `glue/` — shims
+### `shim/` — shims and glue
 
 Adapters between third-party expectations and our system. Three flavors:
 
@@ -91,7 +91,7 @@ Adapters between third-party expectations and our system. Three flavors:
 2. **Upstream macros → our facilities** — e.g., a future `logging.h` shim mapping upstream's `LogError(())` / `LogInfo(())` family to our project logging path. A future `metric.h` stub will compile out upstream's telemetry calls to no-ops.
 3. **Build-time configuration headers** for third-party libs — e.g., `config.h` (HAVE_CONFIG_H for libsrtp), `libsrtp_config/`, `netinet/in.h` polyfill.
 
-Glue is **purpose-built to live**. It's not a holding pen for transient files. A file in `glue/` belongs there because its job is to translate, not because it's about to be replaced.
+Shim is **purpose-built to live**. It's not a holding pen for transient files. A file in `shim/` belongs there because its job is to translate, not because it's about to be replaced.
 
 ### WebRTC-app code (files directly under `webrtc/`)
 
@@ -110,7 +110,7 @@ When pulling in a file from upstream or writing new code, place it by *role*, no
 |---|---|
 | Implements WebRTC protocol (SDP/ICE/DTLS/peer-connection/SRTP/RTCP correctness) | `algorithm/` |
 | Small reusable helper consumed by algorithm code | `util/` |
-| Adapter between third-party expectations and our system facilities | `glue/` |
+| Adapter between third-party expectations and our system facilities | `shim/` |
 | Our solution code that drives the protocol stack from our side | top-level (under `webrtc/` directly) |
 
 A file's eventual fate (kept, replaced, deleted) does not change its current placement.
@@ -119,17 +119,17 @@ A file's eventual fate (kept, replaced, deleted) does not change its current pla
 
 Per GUIDELINES.md "Copy-from-upstream policy," files that originated as upstream copies keep their upstream copyright header on initial copy and are tailored freely afterward.
 
-Initial tree (S1 state): everything in `algorithm/` and `glue/` is **our own code**. No upstream files have been pulled in yet. The upstream-source rows in the table below are forward-looking — they describe what will land in those directories as later S-steps bring upstream code in.
+Initial tree (S1 state): everything in `algorithm/` and `shim/` is **our own code**. No upstream files have been pulled in yet. The upstream-source rows in the table below are forward-looking — they describe what will land in those directories as later S-steps bring upstream code in.
 
 | Current contents | Origin |
 |---|---|
 | `algorithm/signaling.{c,h}` | Ours (Avnet MIT). Kept. |
 | `algorithm/peer_connection.{c,h}` | Ours (Avnet MIT). Doomed — replaced by upstream `examples/peer_connection/` in a later S-step. |
 | `algorithm/ice_controller.{c,h}` | Ours (Avnet MIT). Doomed — replaced by upstream `examples/ice_controller/`. |
-| `algorithm/dtls_transport.{c,h}` | Ours (Avnet MIT). Doomed — replaced by upstream `examples/network_transport/transport_dtls_mbedtls.*` + UDP BIO + lwIP UDP wrapper. The cert/key/fingerprint knowledge here carries forward via `glue/csprng` feeding the upstream DRBG. |
-| `glue/csprng.{c,h}` | Ours (Avnet MIT). Kept — no upstream analog. |
-| `glue/config.h` | Ours. Project glue for libsrtp. |
-| `glue/libsrtp_config/`, `glue/netinet/` | Vendor compat / build config. |
+| `algorithm/dtls_transport.{c,h}` | Ours (Avnet MIT). Doomed — replaced by upstream `examples/network_transport/transport_dtls_mbedtls.*` + UDP BIO + lwIP UDP wrapper. The cert/key/fingerprint knowledge here carries forward via `shim/csprng` feeding the upstream DRBG. |
+| `shim/csprng.{c,h}` | Ours (Avnet MIT). Kept — no upstream analog. |
+| `shim/config.h` | Ours. Project glue for libsrtp. |
+| `shim/libsrtp_config/`, `shim/netinet/` | Vendor compat / build config. |
 | `app_webrtc.{c,h}` | Ours (Avnet MIT). Body rewrites in a later S-step. |
 | `media_source_ring.{c,h}` | Ours (Avnet MIT). Body rewrites + renames in a later S-step. |
 | `webrtc_smoke_test.{c,h}` | Ours (Avnet MIT). |
@@ -142,5 +142,5 @@ Initial tree (S1 state): everything in `algorithm/` and `glue/` is **our own cod
 | Future `util/timer_controller/` | Upstream awslabs `examples/timer_controller/` (Apache-2.0) |
 | Future `util/message_queue/` | Upstream awslabs `examples/message_queue/` (Apache-2.0) |
 | Future `util/networking_utils/` | Upstream awslabs `examples/networking/networking_utils/` (Apache-2.0) |
-| Future `glue/logging.h` | Our shim mapping upstream `LogError(())` family to our project logging |
-| Future `glue/metric.h` | Our shim stubbing upstream's telemetry calls to no-ops |
+| Future `shim/logging.h` | Our shim mapping upstream `LogError(())` family to our project logging |
+| Future `shim/metric.h` | Our shim stubbing upstream's telemetry calls to no-ops |

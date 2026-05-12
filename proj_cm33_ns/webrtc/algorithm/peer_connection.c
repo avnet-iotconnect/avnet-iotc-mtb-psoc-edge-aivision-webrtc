@@ -24,9 +24,9 @@
 
 #include "sdp_serializer.h"
 
-#include "webrtc/csprng.h"
-#include "webrtc/dtls_transport.h"
-#include "webrtc/peer_connection.h"
+#include "csprng.h"
+#include "dtls_transport.h"
+#include "peer_connection.h"
 
 // Buffer caps. The fingerprint string is "sha-256 " + 32*3 - 1 = 103 chars + NUL.
 // ICE ufrag minimum is 4 chars (RFC 8839); 8 is comfortable. ICE pwd minimum is

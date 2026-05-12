@@ -181,6 +181,7 @@ LIBSRTP_DIR := $(THIRD_PARTY_DIR)/libsrtp
 # it ships <arpa/inet.h>; libsrtp's datatypes.h needs it for htonX/ntohX).
 DEFINES+=HAVE_CONFIG_H
 INCLUDES+=./webrtc
+INCLUDES+=./webrtc/shim
 
 # Demote `incompatible-pointer-types` from error to warning. libsrtp's srtp.c
 # passes `(unsigned int *)` where the cipher API takes `uint32_t *`. Both are

@@ -7,8 +7,8 @@
 #define WEBRTC_PEER_CONNECTION_H_
 
 #include <stddef.h>
-#include "webrtc/dtls_transport.h"
-#include "webrtc/signaling.h"
+#include "dtls_transport.h"
+#include "signaling.h"
 
 typedef struct PeerConnectionCtx *PeerConnectionHandle;
 

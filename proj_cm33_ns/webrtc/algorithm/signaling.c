@@ -53,9 +53,9 @@
 
 #include "wslay/wslay.h"
 
-#include "webrtc/csprng.h"
-#include "webrtc/ice_controller.h"
-#include "webrtc/signaling.h"
+#include "csprng.h"
+#include "ice_controller.h"
+#include "signaling.h"
 
 // -------------------------------------------------------------------------
 // Buffer sizes
