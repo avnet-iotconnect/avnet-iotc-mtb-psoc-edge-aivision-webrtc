@@ -35,6 +35,16 @@ SOURCES+=$(CORE_JSON_DIR)/source/core_json.c
 INCLUDES+=$(CORE_JSON_DIR)/source/include
 
 # -----------------------------------------------------------------------------
+# WebRTC tier includes (sources auto-discovered by MTB under ./webrtc/).
+# See proj_cm33_ns/webrtc/README.md for the tier layout (algorithm/util/shim).
+# All files inside each tier are flat — no subdirs. Each tier dir on the
+# include path so upstream's bare includes (e.g. `#include "sdp_controller.h"`)
+# resolve.
+# -----------------------------------------------------------------------------
+INCLUDES+=./webrtc/algorithm
+INCLUDES+=./webrtc/util
+
+# -----------------------------------------------------------------------------
 # amazon-kinesis-video-streams-stun
 # -----------------------------------------------------------------------------
 SOURCES+=$(wildcard $(THIRD_PARTY_DIR)/amazon-kinesis-video-streams-stun/source/*.c)
@@ -59,16 +69,19 @@ CY_IGNORE+=$(THIRD_PARTY_DIR)/amazon-kinesis-video-streams-ice/iceFilePaths.cmak
 
 # -----------------------------------------------------------------------------
 # amazon-kinesis-video-streams-rtp
-# Codec packetizers live in codec_packetizers/<codec>/. We pull H.264 only;
-# G.711, H.265, Opus, VP8 are not used (video-only, H.264-only per PILOT.md §6).
+# Codec packetizers live in codec_packetizers/<codec>/. The upstream
+# peer_connection code references all four codec helpers (h264, h265, opus,
+# g711) unconditionally — dead branches at runtime since we only negotiate
+# H.264, but they must link. Glob picks up every codec dir; trim in debt
+# rework if size matters.
 # -----------------------------------------------------------------------------
 SOURCES+=$(wildcard $(THIRD_PARTY_DIR)/amazon-kinesis-video-streams-rtp/source/*.c)
-SOURCES+=$(wildcard $(THIRD_PARTY_DIR)/amazon-kinesis-video-streams-rtp/codec_packetizers/h264/*.c)
+SOURCES+=$(wildcard $(THIRD_PARTY_DIR)/amazon-kinesis-video-streams-rtp/codec_packetizers/*/*.c)
 INCLUDES+=$(THIRD_PARTY_DIR)/amazon-kinesis-video-streams-rtp/source/include
 INCLUDES+=$(THIRD_PARTY_DIR)/amazon-kinesis-video-streams-rtp/codec_packetizers/h264/include
-CY_IGNORE+=$(THIRD_PARTY_DIR)/amazon-kinesis-video-streams-rtp/codec_packetizers/g711
-CY_IGNORE+=$(THIRD_PARTY_DIR)/amazon-kinesis-video-streams-rtp/codec_packetizers/h265
-CY_IGNORE+=$(THIRD_PARTY_DIR)/amazon-kinesis-video-streams-rtp/codec_packetizers/opus
+INCLUDES+=$(THIRD_PARTY_DIR)/amazon-kinesis-video-streams-rtp/codec_packetizers/h265/include
+INCLUDES+=$(THIRD_PARTY_DIR)/amazon-kinesis-video-streams-rtp/codec_packetizers/opus/include
+INCLUDES+=$(THIRD_PARTY_DIR)/amazon-kinesis-video-streams-rtp/codec_packetizers/g711/include
 CY_IGNORE+=$(THIRD_PARTY_DIR)/amazon-kinesis-video-streams-rtp/codec_packetizers/vp8
 CY_IGNORE+=$(THIRD_PARTY_DIR)/amazon-kinesis-video-streams-rtp/test
 CY_IGNORE+=$(THIRD_PARTY_DIR)/amazon-kinesis-video-streams-rtp/CMakeLists.txt

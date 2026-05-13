@@ -1,102 +1,90 @@
-/* SPDX-License-Identifier: MIT
- * Copyright (C) 2026 Avnet
- * Authors: Nikola Markovic <nikola.markovic@avnet.com> et al.
+/*
+ * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License").
+ * You may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
-#ifndef WEBRTC_PEER_CONNECTION_H_
-#define WEBRTC_PEER_CONNECTION_H_
+#ifndef PEER_CONNECTION_H
+#define PEER_CONNECTION_H
 
-#include <stddef.h>
-#include "dtls_transport.h"
-#include "signaling.h"
+#pragma once
 
-typedef struct PeerConnectionCtx *PeerConnectionHandle;
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-PeerConnectionHandle peer_connection_create(void);
-void peer_connection_destroy(PeerConnectionHandle pc);
+#include <stdio.h>
+#include <stdint.h>
 
-/* Local ICE creds generated for the SDP a=ice-ufrag / a=ice-pwd lines.
- * Surfaced from peer_connection_build_answer so ice_controller can use the
- * same bytes as the STUN message-integrity key (RFC 8445 §7.2.2). Mismatch
- * with the SDP lines would break the browser's connectivity-check signing. */
-typedef struct PeerConnectionLocalIceCreds {
-    char ufrag[16];        /* NUL-terminated alnum; today PC_ICE_UFRAG_LEN=8. */
-    char pwd[32];          /* NUL-terminated alnum; today PC_ICE_PWD_LEN=24.  */
-    size_t ufrag_len;
-    size_t pwd_len;
-} PeerConnectionLocalIceCreds;
+#include "peer_connection_data_types.h"
+#include "sdp_controller_data_types.h"
 
-/* Remote ICE creds scraped from the offer's a=ice-ufrag / a=ice-pwd lines.
- * Bounds are RFC 8839 §5.4: ufrag is 4-256 chars, pwd is 22-256 chars. We
- * crop conservatively — Chrome ships short values today and we never have to
- * round-trip these. Mismatch fails STUN integrity check at the browser. */
-typedef struct PeerConnectionRemoteIceCreds {
-    char ufrag[64];
-    char pwd[128];
-    size_t ufrag_len;
-    size_t pwd_len;
-} PeerConnectionRemoteIceCreds;
+PeerConnectionResult_t PeerConnection_Init( PeerConnectionSession_t * pSession,
+                                            PeerConnectionSessionConfiguration_t * pSessionConfig );
+PeerConnectionResult_t PeerConnection_Start( PeerConnectionSession_t * pSession );
+PeerConnectionResult_t PeerConnection_AddTransceiver( PeerConnectionSession_t * pSession,
+                                                      Transceiver_t * pTransceiver );
+#if ENABLE_SCTP_DATA_CHANNEL
+/* Enable data channel to be included in the SDP offer. */
+PeerConnectionResult_t PeerConnection_AddDataChannel( PeerConnectionSession_t * pSession );
+#endif /* ENABLE_SCTP_DATA_CHANNEL */
 
-/* Minimal offer parse: scan for a=ice-ufrag:<value> and a=ice-pwd:<value>.
- * Not a full SDP parser — just the two attributes we have to round-trip into
- * the ICE controller. Returns 0 on success (both attrs found and copied). */
-int peer_connection_extract_remote_ice_creds(
-    const char *offer,
-    size_t offer_len,
-    PeerConnectionRemoteIceCreds *out
-);
+#if ENABLE_TWCC_SUPPORT
+/* Enable TWCC Bandwidth Estimation Callback to change the media bitrates along side tith the Handler Callback */
+PeerConnectionResult_t PeerConnection_SetSenderBandwidthEstimationCallback( PeerConnectionSession_t * pSession,
+                                                                            OnBandwidthEstimationCallback_t onBandwidthEstimationCallback,
+                                                                            void * pUserContext );
+#endif /* ENABLE_TWCC_SUPPORT */
 
-/* Build an SDP answer body suitable for KVS / Chrome.
- *
- * Inputs:
- *   dt         - DTLS transport handle (D1) for the local SHA-256 fingerprint.
- *                Caller still owns it.
- *   offer      - raw offer SDP (Chrome's), NUL-terminated. Existence is
- *                asserted; full parse is deferred — the answer shape is the
- *                fixed sendonly H.264 mid:0 form Chrome's recvonly viewer
- *                offer expects. Real offer-driven negotiation lands in a
- *                later increment.
- *   offer_len  - convenience; may differ from strlen(offer) if caller has it.
- *   local_ip   - device's local IP for o= and c= lines (dotted quad, e.g.
- *                "192.168.38.196").
- *   local_port - UDP port device is bound to (from getsockname). Used in m=
- *                line so browser knows the real port to connect to.
- *   out / cap  - caller-provided output scratch. The serialized SDP is written
- *                into [out, out + *out_len). cap should be >= ~1.5 KB to be
- *                safe; the answer body is typically ~600-900 B.
- *   out_len    - on success, holds the serialized length (no trailing NUL).
- *
- * Returns 0 on success, negative on failure (per-step diagnostics print to
- * UART with the [pc] prefix). */
-int peer_connection_build_answer(
-    DtlsTransportHandle dt,
-    const char *offer,
-    size_t offer_len,
-    const char *local_ip,
-    uint16_t local_port,
-    char *out,
-    size_t cap,
-    size_t *out_len,
-    PeerConnectionLocalIceCreds *out_ice_creds
-);
+PeerConnectionResult_t PeerConnection_MatchTransceiverBySsrc( PeerConnectionSession_t * pSession,
+                                                              uint32_t ssrc,
+                                                              const Transceiver_t ** ppTransceiver );
+PeerConnectionResult_t PeerConnection_SetLocalDescription( PeerConnectionSession_t * pSession,
+                                                           const PeerConnectionBufferSessionDescription_t * pBufferSessionDescription );
+PeerConnectionResult_t PeerConnection_SetRemoteDescription( PeerConnectionSession_t * pSession,
+                                                            const PeerConnectionBufferSessionDescription_t * pBufferSessionDescription );
+PeerConnectionResult_t PeerConnection_SetVideoOnFrame( PeerConnectionSession_t * pSession,
+                                                       OnFrameReadyCallback_t onFrameReadyCallbackFunc,
+                                                       void * pOnFrameReadyCallbackCustomContext );
+PeerConnectionResult_t PeerConnection_SetAudioOnFrame( PeerConnectionSession_t * pSession,
+                                                       OnFrameReadyCallback_t onFrameReadyCallbackFunc,
+                                                       void * pOnFrameReadyCallbackCustomContext );
+PeerConnectionResult_t PeerConnection_AddRemoteCandidate( PeerConnectionSession_t * pSession,
+                                                          const char * pDecodeMessage,
+                                                          size_t decodeMessageLength );
+PeerConnectionResult_t PeerConnection_CloseSession( PeerConnectionSession_t * pSession );
+PeerConnectionResult_t PeerConnection_WriteFrame( PeerConnectionSession_t * pSession,
+                                                  Transceiver_t * pTransceiver,
+                                                  const PeerConnectionFrame_t * pFrame );
+PeerConnectionResult_t PeerConnection_CreateAnswer( PeerConnectionSession_t * pSession,
+                                                    PeerConnectionBufferSessionDescription_t * pOutputBufferSessionDescription,
+                                                    char * pOutputSerializedSdpMessage,
+                                                    size_t * pOutputSerializedSdpMessageLength );
+PeerConnectionResult_t PeerConnection_CreateOffer( PeerConnectionSession_t * pSession,
+                                                   PeerConnectionBufferSessionDescription_t * pOutputBufferSessionDescription,
+                                                   char * pOutputSerializedSdpMessage,
+                                                   size_t * pOutputSerializedSdpMessageLength );
+PeerConnectionResult_t PeerConnection_SetOnLocalCandidateReady( PeerConnectionSession_t * pSession,
+                                                                OnIceCandidateReadyCallback_t onLocalCandidateReadyCallbackFunc,
+                                                                void * pOnLocalCandidateReadyCallbackCustomContext );
+PeerConnectionResult_t PeerConnection_AddIceServerConfig( PeerConnectionSession_t * pSession,
+                                                          PeerConnectionSessionConfiguration_t * pSessionConfig );
+PeerConnectionResult_t PeerConnection_SetPictureLossIndicationCallback( PeerConnectionSession_t * pSession,
+                                                                        OnPictureLossIndicationCallback_t onPictureLossIndicationCallback,
+                                                                        void * pUserContext );
 
-/* Drives the session after answer is sent: ICE pairing, DTLS handshake,
- * SRTP keying, RTP send loop (calls into media_source_ring), RTCP receive
- * loop (PLI/FIR -> IDR-on-demand seq bump on shared mem). Blocks until
- * disconnect.
- *
- * Holds a reference to sig for trickle-ICE candidate exchange. */
-int peer_connection_run(PeerConnectionHandle pc, SignalingHandle sig);
+#ifdef __cplusplus
+}
+#endif
 
-/* RTP write entry called by media_source_ring per NAL.
- * Pointer must remain valid until this call returns (it does - the ring
- * keeps the slot reserved across the call). */
-int PeerConnection_WriteFrame(
-    PeerConnectionHandle pc,
-    const unsigned char *nal,
-    size_t nal_len,
-    unsigned long pts_ms,
-    int is_idr
-);
-
-#endif /* WEBRTC_PEER_CONNECTION_H_ */
+#endif /* PEER_CONNECTION_H */

@@ -115,32 +115,39 @@ When pulling in a file from upstream or writing new code, place it by *role*, no
 
 A file's eventual fate (kept, replaced, deleted) does not change its current placement.
 
+**Flat layout by default inside each tier.** Place files directly under `algorithm/`, `util/`, `shim/`. Only create a subdirectory when an upstream module is genuinely multi-file with its own namespace and dropping its files flat would lose clarity (e.g., a codec-helper module with several sibling `.c` files). The per-S-step lands the call.
+
 ## Provenance — what came from where
 
 Per GUIDELINES.md "Copy-from-upstream policy," files that originated as upstream copies keep their upstream copyright header on initial copy and are tailored freely afterward.
 
-Initial tree (S1 state): everything in `algorithm/` and `shim/` is **our own code**. No upstream files have been pulled in yet. The upstream-source rows in the table below are forward-looking — they describe what will land in those directories as later S-steps bring upstream code in.
+All files inside each tier directory are flat — no subdirectories. Upstream multi-file modules (peer_connection's 17 files, codec helpers) all sit at the same level with their `peer_connection_*` / `sdp_controller_*` prefixes carrying the grouping.
 
 | Current contents | Origin |
 |---|---|
-| `algorithm/signaling.{c,h}` | Ours (Avnet MIT). Kept. |
-| `algorithm/peer_connection.{c,h}` | Ours (Avnet MIT). Doomed — replaced by upstream `examples/peer_connection/` in a later S-step. |
-| `algorithm/ice_controller.{c,h}` | Ours (Avnet MIT). Doomed — replaced by upstream `examples/ice_controller/`. |
-| `algorithm/dtls_transport.{c,h}` | Ours (Avnet MIT). Doomed — replaced by upstream `examples/network_transport/transport_dtls_mbedtls.*` + UDP BIO + lwIP UDP wrapper. The cert/key/fingerprint knowledge here carries forward via `shim/csprng` feeding the upstream DRBG. |
+| `algorithm/signaling.{c,h}` | Ours (Avnet MIT). Kept — hooks into our secure-sockets TLS stack. |
+| `algorithm/ice_controller.{c,h}` | Ours (Avnet MIT). Doomed — pending replacement by upstream `examples/ice_controller/`. |
+| `algorithm/dtls_transport.{c,h}` | Ours (Avnet MIT). Doomed — pending replacement by upstream `examples/network_transport/transport_dtls_mbedtls.*` + UDP BIO + lwIP UDP wrapper. The cert/key/fingerprint knowledge here carries forward via `shim/csprng` feeding the upstream DRBG. |
+| `algorithm/peer_connection.{c,h}` + `peer_connection_data_types.h` | Upstream awslabs `examples/peer_connection/peer_connection.{c,h}` + `peer_connection_data_types.h` (Apache-2.0). |
+| `algorithm/peer_connection_sdp.{c,h}` | Upstream awslabs `examples/peer_connection/peer_connection_sdp.{c,h}` (Apache-2.0). The offer-driven answer builder. |
+| `algorithm/peer_connection_srtp.{c,h}` + `peer_connection_srtcp.{c,h}` | Upstream awslabs `examples/peer_connection/` (Apache-2.0). SRTP/SRTCP framing over libsrtp. |
+| `algorithm/peer_connection_jitter_buffer.{c,h}` + `peer_connection_rolling_buffer.{c,h}` | Upstream awslabs `examples/peer_connection/` (Apache-2.0). RX buffering — defer skip-decision to debt-rework. |
+| `algorithm/peer_connection_codec_helper.h` + `peer_connection_{h264,h265,opus,g711}_helper.{c,h}` | Upstream awslabs `examples/peer_connection/peer_connection_codec_helper/` (Apache-2.0), flattened. Trim non-H.264 in debt-rework. |
+| `algorithm/transceiver_data_types.h` | Upstream awslabs `examples/peer_connection/transceiver_data_types.h` (Apache-2.0). |
+| `algorithm/sdp_controller.{c,h}` + `sdp_controller_data_types.h` | Upstream awslabs `examples/sdp_controller/` (Apache-2.0). |
+| `util/string_utils.{c,h}` | Upstream awslabs `examples/string_utils/` (Apache-2.0). |
 | `shim/csprng.{c,h}` | Ours (Avnet MIT). Kept — no upstream analog. |
+| `shim/logging.h` | Ours (Avnet MIT). Maps upstream `LogError(())` family to our project logging. |
 | `shim/config.h` | Ours. Project glue for libsrtp. |
 | `shim/libsrtp_config/`, `shim/netinet/` | Vendor compat / build config. |
-| `app_webrtc.{c,h}` | Ours (Avnet MIT). Body rewrites in a later S-step. |
-| `media_source_ring.{c,h}` | Ours (Avnet MIT). Body rewrites + renames in a later S-step. |
+| `app_webrtc.{c,h}` | Ours (Avnet MIT). `app_webrtc.c` is currently an **S6a stub** that preserves the public surface and boots a no-op task; the real orchestration body lands in S6b on top of upstream `PeerConnection_*` APIs. `app_webrtc.h` public surface preserved (viewer→master comment wording corrected in S6a). |
+| `app_webrtc.c.bak` | Ours (Avnet MIT). **Reference-only, not built.** Previous hand-rolled implementation kept under version control so S6b has the prior platform plumbing (creds populate, region parse, signaling/wslay/ICE wiring, retry/backoff) side-by-side with the upstream APIs being wired in. |
+| `media_source_ring.{c,h}` | Ours (Avnet MIT). Body rewrites in a later S-step. |
 | `webrtc_smoke_test.{c,h}` | Ours (Avnet MIT). |
 | `aws_creds.h` | Ours (Avnet MIT). |
-| Future `algorithm/peer_connection/` | Upstream awslabs `examples/peer_connection/` (Apache-2.0) |
-| Future `algorithm/ice_controller/` | Upstream awslabs `examples/ice_controller/` (Apache-2.0) |
-| Future `algorithm/sdp_controller/` | Upstream awslabs `examples/sdp_controller/` (Apache-2.0) |
-| Future `algorithm/dtls/` | Upstream awslabs `examples/network_transport/transport_dtls_mbedtls.*` + UDP BIO (Apache-2.0) |
-| Future `util/string_utils/` | Upstream awslabs `examples/string_utils/` (Apache-2.0) |
-| Future `util/timer_controller/` | Upstream awslabs `examples/timer_controller/` (Apache-2.0) |
-| Future `util/message_queue/` | Upstream awslabs `examples/message_queue/` (Apache-2.0) |
-| Future `util/networking_utils/` | Upstream awslabs `examples/networking/networking_utils/` (Apache-2.0) |
-| Future `shim/logging.h` | Our shim mapping upstream `LogError(())` family to our project logging |
+| Future `algorithm/ice_controller*.{c,h}` | Upstream awslabs `examples/ice_controller/` (Apache-2.0) |
+| Future `algorithm/transport_dtls_mbedtls.{c,h}` + UDP BIO + UDP wrapper | Upstream awslabs `examples/network_transport/` (Apache-2.0) |
+| Future `util/timer_controller.{c,h}` | Upstream awslabs `examples/timer_controller/` (Apache-2.0) |
+| Future `util/message_queue.{c,h}` | Upstream awslabs `examples/message_queue/` (Apache-2.0) |
+| Future `util/networking_utils.{c,h}` | Upstream awslabs `examples/networking/networking_utils/` (Apache-2.0) |
 | Future `shim/metric.h` | Our shim stubbing upstream's telemetry calls to no-ops |
