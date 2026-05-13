@@ -7,6 +7,8 @@
 #define WEBRTC_SIGNALING_H_
 
 #include <stddef.h>
+
+#include "peer_connection_data_types.h"
 #include "webrtc/aws_creds.h"
 
 typedef struct SignalingCtx *SignalingHandle;
@@ -34,6 +36,10 @@ int signaling_build_signed_url(
 SignalingHandle signaling_connect(const char *signed_url);
 void signaling_disconnect(SignalingHandle sig);
 
+/* Bind or clear the peer-connection session that inbound ICE_CANDIDATE frames
+ * should feed into. The pointer is borrowed; caller owns the session lifetime. */
+void signaling_set_peer_connection(SignalingHandle sig, PeerConnectionSession_t *session);
+
 /* Block until a viewer publishes an SDP offer (or the socket dies). On
  * success returns 0, writes the decoded SDP into out_sdp (null-terminated),
  * and latches the viewer's senderClientId on the handle so the matching
@@ -44,8 +50,7 @@ int signaling_wait_for_offer(SignalingHandle sig, char *out_sdp, size_t out_sdp_
 
 /* Wrap an SDP answer in the KVS WSS send envelope (action=SDP_ANSWER,
  * RecipientClientId=latched senderClientId, MessagePayload=base64(sdp))
- * and push it through wslay. Drains wslay_event_send before returning so
- * the caller can observe send errors. */
+ * and queue it for the next signaling_tick drain. */
 int signaling_send_answer(SignalingHandle sig, const char *sdp_answer);
 
 /* Non-blocking pump of the wslay event loop — drains any queued send frames
@@ -58,8 +63,8 @@ int signaling_tick(SignalingHandle sig);
 /* Trickle-out a single ICE candidate. Wraps it in the KVS WSS send envelope
  * (action=ICE_CANDIDATE, RecipientClientId=latched senderClientId,
  * MessagePayload=base64({"candidate":...,"sdpMid":...,"sdpMLineIndex":N})).
- * Mirrors signaling_send_answer's drain behavior. candidate is the SDP
- * "candidate:..." body (no "a=" prefix). */
+ * Candidate is the SDP "candidate:..." body (no "a=" prefix). The frame is
+ * queued and drained by signaling_tick. */
 int signaling_send_ice_candidate(
     SignalingHandle sig,
     const char *candidate,

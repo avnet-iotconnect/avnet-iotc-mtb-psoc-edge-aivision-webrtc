@@ -44,16 +44,9 @@ INCLUDES+=$(CORE_JSON_DIR)/source/include
 INCLUDES+=./webrtc/algorithm
 INCLUDES+=./webrtc/util
 
-# Files temporarily excluded during S6a build-up. Both contain pre-pivot code
-# that calls into the deleted hand-rolled API (`PeerConnectionHandle`,
-# `ice_controller_add_remote_candidate_json`, etc.). They get reinstated and
-# rewritten in their respective later S-steps:
-#   - signaling.c        → S6b/S7 (orchestrator wires it back in, with the
-#                          synchronous-drain fix per PILOT.md "keep-our-signaling
-#                          decision")
+# Files temporarily excluded during the pivot build-up.
 #   - media_source_ring* → S10 (media adapter rewrite against upstream's
 #                          AppMediaSource_Init-style callback contract)
-CY_IGNORE+=./webrtc/algorithm/signaling.c
 CY_IGNORE+=./webrtc/media_source_ring.c
 CY_IGNORE+=./webrtc/media_source_ring.h
 
@@ -138,7 +131,7 @@ CY_IGNORE+=$(THIRD_PARTY_DIR)/amazon-kinesis-video-streams-signaling/signalingFi
 
 # -----------------------------------------------------------------------------
 # SigV4-for-AWS-IoT-embedded-sdk (v1.3.1)
-# Used by signaling.c to sign the ConnectAsViewer WSS URL with the 1-hour AWS
+# Used by signaling.c to sign the ConnectAsMaster WSS URL with the 1-hour AWS
 # creds triplet (AKID, secret, session token).  Defaults config taken via
 # SIGV4_DO_NOT_USE_CUSTOM_CONFIG (set above). The processing buffer holds the
 # full canonical request including the session token (~1200 chars for STS), so

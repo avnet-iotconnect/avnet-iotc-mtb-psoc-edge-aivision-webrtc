@@ -639,7 +639,7 @@ static TlsTransportStatus_t initMbedtls( mbedtls_entropy_context * pEntropyConte
 
         if( mbedtlsError != PSA_SUCCESS )
         {
-            LogError( ( "Failed to initialize PSA Crypto implementation: %s", ( int ) mbedtlsError ) );
+            LogError( ( "Failed to initialize PSA Crypto implementation: %d", ( int ) mbedtlsError ) );
             returnStatus = TLS_TRANSPORT_INTERNAL_ERROR;
         }
     }

@@ -9,8 +9,8 @@
  * Step 5a (GetSignalingChannelEndpoint, REST), Step 5b URL signing
  * (signaling_build_signed_url) and the WSS upgrade + wslay event-loop glue
  * (signaling_connect / signaling_wait_for_offer / signaling_disconnect) are
- * implemented. signaling_send_answer is still a stub — JSON envelope wrap
- * is the next increment.
+ * implemented. S6b reinstates signaling_send_answer / signaling_send_ice_candidate
+ * as queued wslay sends drained by signaling_tick.
  *
  * KVS role: we connect as MASTER. Role names describe the signaling-channel
  * topology, not media direction — a camera streaming video out is the master
@@ -59,7 +59,7 @@
 #include "wslay/wslay.h"
 
 #include "csprng.h"
-#include "ice_controller.h"
+#include "peer_connection.h"
 #include "signaling.h"
 
 // -------------------------------------------------------------------------
@@ -336,7 +336,7 @@ cleanup:
 }
 
 // -------------------------------------------------------------------------
-// Step 5b — build SigV4-presigned ConnectAsViewer URL
+// Step 5b — build SigV4-presigned ConnectAsMaster URL
 // -------------------------------------------------------------------------
 
 // Append a literal string fragment to a write cursor, advancing it. Returns 0
@@ -666,9 +666,19 @@ struct SignalingCtx {
     // signaling_send_answer to fill RecipientClientId.
     char peer_client_id[SIG_CLIENT_ID_MAX];
     size_t peer_client_id_len;
+    PeerConnectionSession_t *peer_connection_session;
 };
 
 static struct SignalingCtx g_sig;
+
+
+void signaling_set_peer_connection(SignalingHandle sig, PeerConnectionSession_t *session) {
+    if (NULL == sig) {
+        return;
+    }
+
+    sig->peer_connection_session = session;
+}
 
 // Split a "wss://<host>/<path-and-query>" URL into a malloc'd host and a
 // path pointer (into the original buffer, after the host). On success the
@@ -890,13 +900,22 @@ static void dispatch_text_frame(SignalingHandle sig, const uint8_t *msg, size_t 
                    -b64_rc, (unsigned) recv.base64EncodedPayloadLength);
             return;
         }
-        // ICE controller is initialized after signaling_send_answer in
-        // run_session. ICE_CANDIDATE frames arriving before then are stashed
-        // by the controller's pre-init holding pen and replayed at the end of
-        // ice_controller_init. Once the controller is up the frames feed
-        // straight through. KVS/Chrome may retrickle the same candidate while
-        // waiting for our answer; Ice_AddRemoteCandidate dedupes on drain.
-        (void) ice_controller_add_remote_candidate_json((const char *) payload, decoded_len);
+        if (NULL == sig->peer_connection_session) {
+            printf("[signaling] ICE_CANDIDATE arrived before peer session attach, dropping\n");
+            return;
+        }
+
+        PeerConnectionResult_t pc_rc = PeerConnection_AddRemoteCandidate(
+            sig->peer_connection_session,
+            (const char *) payload,
+            decoded_len
+        );
+        if (
+            PEER_CONNECTION_RESULT_OK != pc_rc &&
+            PEER_CONNECTION_RESULT_FAIL_ICE_CONTROLLER_DESERIALIZE_CANDIDATE != pc_rc
+        ) {
+            printf("[signaling] PeerConnection_AddRemoteCandidate failed: %d\n", (int) pc_rc);
+        }
         return;
     }
 
@@ -1213,6 +1232,7 @@ SignalingHandle signaling_connect(const char *signed_url) {
     g_sig.offer_ready = false;
     g_sig.peer_client_id[0] = '\0';
     g_sig.peer_client_id_len = 0;
+    g_sig.peer_connection_session = NULL;
     printf("[signaling] WS upgrade OK (101 Switching Protocols)\n");
     return &g_sig;
 }
@@ -1229,6 +1249,7 @@ void signaling_disconnect(SignalingHandle sig) {
     sig->offer_sdp_cap = 0;
     sig->offer_sdp_len = 0;
     sig->offer_ready = false;
+    sig->peer_connection_session = NULL;
     cy_awsport_network_disconnect(&sig->net_ctx);
     cy_awsport_network_delete(&sig->net_ctx);
     sig->connected = false;
@@ -1446,48 +1467,7 @@ int signaling_send_answer(SignalingHandle sig, const char *sdp_answer) {
         printf("[signaling] wslay_event_queue_msg failed: %d\n", wrc);
         return -1;
     }
-    printf("[signaling] send_answer: queued (%u bytes), draining wslay...\n", (unsigned) env_len);
-
-    // Drive wslay_event_send until the queue drains. Bounded: AWS closes its
-    // end fast if the answer is malformed (Increment C is a stub SDP), and a
-    // wedged TLS write must not block the caller forever. While draining the
-    // send queue, also pump wslay_event_recv to pull any incoming messages
-    // (e.g., browser's trickled candidates) so they don't back up in the TLS layer.
-    const TickType_t start = xTaskGetTickCount();
-    const TickType_t budget = pdMS_TO_TICKS(2000);
-    int loop_count = 0;
-    int recv_count = 0;
-    while (wslay_event_want_write(sig->ws_ctx)) {
-        // Try to receive any pending messages first.
-        wrc = wslay_event_recv(sig->ws_ctx);
-        if (0 != wrc && wrc != WSLAY_ERR_WOULDBLOCK) {
-            printf("[signaling] wslay_event_recv during send_answer drain failed: %d\n", wrc);
-            return -1;
-        }
-        if (wrc == 0) {
-            recv_count++;
-        }
-
-        // Now send.
-        wrc = wslay_event_send(sig->ws_ctx);
-        loop_count++;
-        if (0 != wrc) {
-            printf("[signaling] wslay_event_send (answer) failed on loop %d: %d\n", loop_count, wrc);
-            return -1;
-        }
-        if (sig->transport_error) {
-            printf("[signaling] send_answer: transport error during drain (loop %d)\n", loop_count);
-            return -1;
-        }
-        if ((xTaskGetTickCount() - start) >= budget) {
-            printf("[signaling] send_answer: drain timed out after %d send loops, %d recv calls (>2 s)\n", loop_count, recv_count);
-            return -1;
-        }
-        vTaskDelay(pdMS_TO_TICKS(20));
-    }
-    printf("[signaling] send_answer: wslay drain complete (%d send loops, %d recv calls)\n", loop_count, recv_count);
-
-    printf("[webrtc] WS answer sent (%u envelope bytes)\n", (unsigned) env_len);
+    printf("[signaling] send_answer: queued (%u bytes), signaling_tick will drain it\n", (unsigned) env_len);
     return 0;
 }
 
@@ -1581,24 +1561,6 @@ int signaling_send_ice_candidate(
         return -1;
     }
 
-    const TickType_t start = xTaskGetTickCount();
-    const TickType_t budget = pdMS_TO_TICKS(2000);
-    while (wslay_event_want_write(sig->ws_ctx)) {
-        wrc = wslay_event_send(sig->ws_ctx);
-        if (0 != wrc) {
-            printf("[signaling] wslay_event_send (ICE) failed: %d\n", wrc);
-            return -1;
-        }
-        if (sig->transport_error) {
-            return -1;
-        }
-        if ((xTaskGetTickCount() - start) >= budget) {
-            printf("[signaling] send_ice_candidate: drain timed out (>2 s)\n");
-            return -1;
-        }
-        vTaskDelay(pdMS_TO_TICKS(20));
-    }
-
-    printf("[webrtc] WS ICE candidate sent (%u envelope bytes)\n", (unsigned) env_len);
+    printf("[signaling] send_ice_candidate: queued (%u bytes), signaling_tick will drain it\n", (unsigned) env_len);
     return 0;
 }
