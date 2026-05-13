@@ -34,7 +34,7 @@ The Claude Code project-memory directory mirrors what a long-running agent
 would have remembered across sessions. Read its index, then each entry it
 lists, so a fresh agent walks in with the same accumulated context:
 
-**Path:** `~/.claude/projects/-var-b-shared-work-mtw-fork-aivision-fork-aivision/memory/`
+**Path:** `/shared/memory/`
 
 **Read:** `MEMORY.md` (index — names each entry and one-line description),
 then read every `.md` file it points to. Today the bundle contains:
