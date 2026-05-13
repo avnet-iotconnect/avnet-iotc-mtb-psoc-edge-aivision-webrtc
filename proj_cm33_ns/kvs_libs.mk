@@ -44,6 +44,19 @@ INCLUDES+=$(CORE_JSON_DIR)/source/include
 INCLUDES+=./webrtc/algorithm
 INCLUDES+=./webrtc/util
 
+# Files temporarily excluded during S6a build-up. Both contain pre-pivot code
+# that calls into the deleted hand-rolled API (`PeerConnectionHandle`,
+# `ice_controller_add_remote_candidate_json`, etc.). They get reinstated and
+# rewritten in their respective later S-steps:
+#   - signaling.c        → S6b/S7 (orchestrator wires it back in, with the
+#                          synchronous-drain fix per PILOT.md "keep-our-signaling
+#                          decision")
+#   - media_source_ring* → S10 (media adapter rewrite against upstream's
+#                          AppMediaSource_Init-style callback contract)
+CY_IGNORE+=./webrtc/algorithm/signaling.c
+CY_IGNORE+=./webrtc/media_source_ring.c
+CY_IGNORE+=./webrtc/media_source_ring.h
+
 # -----------------------------------------------------------------------------
 # amazon-kinesis-video-streams-stun
 # -----------------------------------------------------------------------------
@@ -76,7 +89,13 @@ CY_IGNORE+=$(THIRD_PARTY_DIR)/amazon-kinesis-video-streams-ice/iceFilePaths.cmak
 # rework if size matters.
 # -----------------------------------------------------------------------------
 SOURCES+=$(wildcard $(THIRD_PARTY_DIR)/amazon-kinesis-video-streams-rtp/source/*.c)
-SOURCES+=$(wildcard $(THIRD_PARTY_DIR)/amazon-kinesis-video-streams-rtp/codec_packetizers/*/*.c)
+# fork-aivision: enumerate codec packetizers instead of */*.c glob so vp8
+# (CY_IGNORE'd directory) doesn't get pulled in. vp8 *.c expect headers under
+# the dir we're ignoring, so they fail to compile if included by accident.
+SOURCES+=$(wildcard $(THIRD_PARTY_DIR)/amazon-kinesis-video-streams-rtp/codec_packetizers/h264/*.c)
+SOURCES+=$(wildcard $(THIRD_PARTY_DIR)/amazon-kinesis-video-streams-rtp/codec_packetizers/h265/*.c)
+SOURCES+=$(wildcard $(THIRD_PARTY_DIR)/amazon-kinesis-video-streams-rtp/codec_packetizers/opus/*.c)
+SOURCES+=$(wildcard $(THIRD_PARTY_DIR)/amazon-kinesis-video-streams-rtp/codec_packetizers/g711/*.c)
 INCLUDES+=$(THIRD_PARTY_DIR)/amazon-kinesis-video-streams-rtp/source/include
 INCLUDES+=$(THIRD_PARTY_DIR)/amazon-kinesis-video-streams-rtp/codec_packetizers/h264/include
 INCLUDES+=$(THIRD_PARTY_DIR)/amazon-kinesis-video-streams-rtp/codec_packetizers/h265/include

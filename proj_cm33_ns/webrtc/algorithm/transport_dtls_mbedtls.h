@@ -17,7 +17,8 @@
 #ifndef TRANSPORT_DTLS_MBEDTLS_H
 #define TRANSPORT_DTLS_MBEDTLS_H
 
-// #include "mbedtls/config.h"
+/* fork-aivision: mbedTLS 3.x renamed the public config entrypoint. */
+#include "mbedtls/build_info.h"
 #include "mbedtls/ctr_drbg.h"
 #include "mbedtls/entropy.h"
 #include "mbedtls/error.h"
@@ -84,8 +85,11 @@ typedef int32_t (* OnTransportDtlsSendHook_t)( void * pCustomContext,
 
 typedef enum
 {
-    KVS_SRTP_PROFILE_AES128_CM_HMAC_SHA1_80 = MBEDTLS_SRTP_AES128_CM_HMAC_SHA1_80,
-    KVS_SRTP_PROFILE_AES128_CM_HMAC_SHA1_32 = MBEDTLS_SRTP_AES128_CM_HMAC_SHA1_32,
+    /* fork-aivision: upstream used MBEDTLS_SRTP_* (no TLS_ infix); the
+     * actual mbedTLS macros are MBEDTLS_TLS_SRTP_* (defined as fallbacks
+     * above for older mbedTLS, and natively present in 3.x). */
+    KVS_SRTP_PROFILE_AES128_CM_HMAC_SHA1_80 = MBEDTLS_TLS_SRTP_AES128_CM_HMAC_SHA1_80,
+    KVS_SRTP_PROFILE_AES128_CM_HMAC_SHA1_32 = MBEDTLS_TLS_SRTP_AES128_CM_HMAC_SHA1_32,
 } KVS_SRTP_PROFILE;
 
 typedef struct

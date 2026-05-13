@@ -17,8 +17,17 @@
 #include <time.h>
 #include <string.h>
 
-#include "FreeRTOS_POSIX/time.h"
-#include "sntp/sntp.h" // SNTP series APIs
+/* fork-aivision: needed for configASSERT — FreeRTOSConfig.h expands it to
+ * taskDISABLE_INTERRUPTS() which is declared in task.h. */
+#include "FreeRTOS.h"
+#include "task.h"
+
+/* fork-aivision: upstream used FreeRTOS-Plus-POSIX clock_gettime / N6's
+ * sntp_get_lasttime + tick extrapolation. We replace both with standard
+ * time(NULL); wall-clock sync is handled at the project level, not here.
+ * Sub-second precision is lost in *_GetCurrentTimeUs; acceptable for SigV4
+ * (second-resolution dates) and our low-fps RTP timing. Revisit if
+ * sub-second NTP correlation matters for jitter/RTCP feedback. */
 #include "logging.h"
 #include "networking_utils.h"
 
@@ -339,7 +348,6 @@ NetworkingUtilsResult_t NetworkingUtils_GetIso8601CurrentTime( char * pDate,
                                                                size_t dateBufferLength )
 {
     NetworkingUtilsResult_t ret = NETWORKING_UTILS_RESULT_OK;
-    struct timespec nowTime;
     time_t timeT;
     size_t timeLength = 0;
 
@@ -350,10 +358,10 @@ NetworkingUtilsResult_t NetworkingUtils_GetIso8601CurrentTime( char * pDate,
 
     if( ret == NETWORKING_UTILS_RESULT_OK )
     {
-        clock_gettime( CLOCK_REALTIME, &nowTime );
-        timeT = nowTime.tv_sec;
+        struct tm tmBuf;
+        timeT = time( NULL );
 
-        timeLength = strftime( pDate, dateBufferLength, "%Y%m%dT%H%M%SZ", gmtime( &timeT ) );
+        timeLength = strftime( pDate, dateBufferLength, "%Y%m%dT%H%M%SZ", gmtime_r( &timeT, &tmBuf ) );
 
         if( timeLength <= 0 )
         {
@@ -370,68 +378,20 @@ NetworkingUtilsResult_t NetworkingUtils_GetIso8601CurrentTime( char * pDate,
     return ret;
 }
 
+/* fork-aivision: replaced N6's sntp_get_lasttime() + tick extrapolation
+ * with standard time(NULL). The project handles wall-clock sync; this
+ * function just reads it. pTick is accepted for API compatibility but
+ * ignored. */
 uint64_t NetworkingUtils_GetCurrentTimeSec( void * pTick )
 {
-    long long sec;
-    long long usec;
-    unsigned int tick;
-    unsigned int tickDiff;
-
-    sntp_get_lasttime( &sec, &usec, &tick );
-
-    if( pTick == NULL )
-    {
-        tickDiff = xTaskGetTickCount() - tick;
-    }
-    else
-    {
-        tickDiff = ( *( uint32_t * )pTick ) - tick;
-    }
-
-    sec += tickDiff / configTICK_RATE_HZ;
-    usec += ( ( tickDiff % configTICK_RATE_HZ ) / portTICK_RATE_MS ) * 1000;
-
-    while( usec >= 1000000 )
-    {
-        usec -= 1000000;
-        sec++;
-    }
-
-    LogDebug( ( "sec: %lld, usec: %lld, tick: %u", sec, usec, tick ) );
-
-    return ( uint64_t ) sec;
+    ( void ) pTick;
+    return ( uint64_t ) time( NULL );
 }
 
 uint64_t NetworkingUtils_GetCurrentTimeUs( void * pTick )
 {
-    long long sec;
-    long long usec;
-    unsigned int tick;
-    unsigned int tickDiff;
-
-    sntp_get_lasttime( &sec, &usec, &tick );
-
-    if( pTick == NULL )
-    {
-        tickDiff = xTaskGetTickCount() - tick;
-    }
-    else
-    {
-        tickDiff = ( *( uint32_t * )pTick ) - tick;
-    }
-
-    sec += tickDiff / configTICK_RATE_HZ;
-    usec += ( ( tickDiff % configTICK_RATE_HZ ) / portTICK_RATE_MS ) * 1000;
-
-    while( usec >= 1000000 )
-    {
-        usec -= 1000000;
-        sec++;
-    }
-
-    // LogDebug( ( "pTick: %p, tickDiff: %u, sec: %lld, usec: %lld, tick: %u", pTick, tickDiff, sec, usec, tick ) );
-
-    return ( ( uint64_t )sec * 1000000 ) + usec;
+    ( void ) pTick;
+    return ( uint64_t ) time( NULL ) * 1000000ULL;
 }
 
 uint64_t NetworkingUtils_GetTimeFromIso8601( const char * pDate,

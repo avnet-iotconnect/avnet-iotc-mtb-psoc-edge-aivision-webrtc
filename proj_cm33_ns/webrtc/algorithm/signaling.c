@@ -41,6 +41,11 @@
 #include "mbedtls/sha1.h"
 #include "mbedtls/sha256.h"
 
+/* Must precede sigv4.h: SigV4's sigv4_config_defaults.h defines LogError
+ * et al. as no-ops via #ifndef. Pre-define them via our shim so SigV4
+ * skips its defaults and uses our printf-backed implementation. */
+#include "logging.h"
+
 #include "sigv4.h"
 #include "signaling_api.h"
 
