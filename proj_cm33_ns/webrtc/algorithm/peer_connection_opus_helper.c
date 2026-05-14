@@ -158,7 +158,7 @@ PeerConnectionResult_t PeerConnectionOpusHelper_WriteOpusFrame( PeerConnectionSe
     uint8_t bufferAfterEncrypt = 1;
     IceControllerResult_t resultIceController;
     uint16_t * pRtpSeq = NULL;
-    uint32_t payloadType;
+    uint32_t payloadType = 0;
     uint32_t * pSsrc = NULL;
     uint32_t packetSent = 0;
     uint32_t bytesSent = 0;

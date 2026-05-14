@@ -594,7 +594,7 @@ static void AddHostCandidate( IceControllerContext_t * pCtx,
 {
     IceControllerResult_t ret = ICE_CONTROLLER_RESULT_OK;
     IceResult_t iceResult;
-    IceCandidate_t * pCandidate;
+    IceCandidate_t * pCandidate = NULL;
     IceControllerSocketContext_t * pSocketContext;
     IceControllerCallbackContent_t localCandidateReadyContent;
     int32_t retLocalCandidateReady;
@@ -623,6 +623,16 @@ static void AddHostCandidate( IceControllerContext_t * pCtx,
         {
             LogError( ( "Failed to add host candidate: mutex lock acquisition." ) );
             ret = ICE_CONTROLLER_RESULT_FAIL_MUTEX_TAKE;
+        }
+    }
+
+    if( ret == ICE_CONTROLLER_RESULT_OK )
+    {
+        if( pCtx->iceContext.numLocalCandidates == 0 )
+        {
+            IceControllerNet_FreeSocketContext( pCtx, pSocketContext );
+            LogError( ( "Ice_AddHostCandidate succeeded but produced no local candidate." ) );
+            ret = ICE_CONTROLLER_RESULT_FAIL_ADD_HOST_CANDIDATE;
         }
     }
 

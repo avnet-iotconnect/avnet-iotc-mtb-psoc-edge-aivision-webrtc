@@ -1344,7 +1344,9 @@ IceControllerResult_t IceController_DeserializeIceCandidate( const char * pDecod
     StringUtilsResult_t stringResult;
     const char * pCandidateString;
     size_t candidateStringLength = 0;
-    const char * pCurr, * pTail, * pNext;
+    const char * pCurr = pDecodeMessage;
+    const char * pTail = pDecodeMessage + decodeMessageLength;
+    const char * pNext = NULL;
     size_t tokenLength;
     IceControllerCandidateDeserializerState_t deserializerState = ICE_CONTROLLER_CANDIDATE_DESERIALIZER_STATE_FOUNDATION;
     uint8_t isAllElementsParsed = 0;
