@@ -39,7 +39,7 @@
 #define APP_WEBRTC_TRANSCEIVER_H264_BITRATE_BPS (1400U * 1024U)
 
 #define WEBRTC_TASK_NAME "webrtc"
-#define WEBRTC_TASK_STACK_W 2048U
+#define WEBRTC_TASK_STACK_W (8U * 1024U)
 #define WEBRTC_TASK_PRIO (tskIDLE_PRIORITY + 2)
 
 #define APP_WEBRTC_POLL_IDLE_MS 20U
@@ -53,6 +53,7 @@ static volatile bool s_creds_dirty = false;
 static bool s_csprng_ready = false;
 static char s_wss_endpoint[APP_WEBRTC_WSS_ENDPOINT_LEN];
 static SignalingHandle s_active_signaling = NULL;
+static PeerConnectionSession_t s_peer_connection_session;
 
 typedef struct AppWebrtcSignalingBridge {
     SignalingHandle sig;
@@ -336,10 +337,7 @@ static int run_session(void) {
     char *local_desc_buffer = NULL;
     char *answer_buffer = NULL;
     SignalingHandle sig = NULL;
-    PeerConnectionSession_t session;
-    PeerConnectionSessionConfiguration_t pc_config;
-    PeerConnectionBufferSessionDescription_t remote_desc;
-    Transceiver_t video_transceiver;
+    PeerConnectionSession_t *session = &s_peer_connection_session;
     AppWebrtcSignalingBridge_t signaling_bridge = {
         .sig = NULL,
         .sdp_mid = APP_WEBRTC_TRANSCEIVER_VIDEO_MID,
@@ -384,36 +382,38 @@ static int run_session(void) {
 
     s_active_signaling = sig;
 
+    PeerConnectionSessionConfiguration_t pc_config;
     memset(&pc_config, 0, sizeof(pc_config));
     pc_config.canTrickleIce = 1U;
     pc_config.natTraversalConfigBitmap =
         ICE_CANDIDATE_NAT_TRAVERSAL_CONFIG_SEND_HOST |
         ICE_CANDIDATE_NAT_TRAVERSAL_CONFIG_ACCEPT_HOST;
 
-    if (PEER_CONNECTION_RESULT_OK != PeerConnection_Init(&session, &pc_config)) {
+    if (PEER_CONNECTION_RESULT_OK != PeerConnection_Init(session, &pc_config)) {
         printf("[webrtc] PeerConnection_Init failed\n");
         goto cleanup;
     }
     peer_connection_inited = true;
 
+    Transceiver_t video_transceiver;
     init_video_transceiver(&video_transceiver);
-    if (PEER_CONNECTION_RESULT_OK != PeerConnection_AddTransceiver(&session, &video_transceiver)) {
+    if (PEER_CONNECTION_RESULT_OK != PeerConnection_AddTransceiver(session, &video_transceiver)) {
         printf("[webrtc] PeerConnection_AddTransceiver failed\n");
         goto cleanup;
     }
 
-    if (PEER_CONNECTION_RESULT_OK != PeerConnection_SetOnLocalCandidateReady(&session, on_local_candidate_ready, &signaling_bridge)) {
+    if (PEER_CONNECTION_RESULT_OK != PeerConnection_SetOnLocalCandidateReady(session, on_local_candidate_ready, &signaling_bridge)) {
         printf("[webrtc] PeerConnection_SetOnLocalCandidateReady failed\n");
         goto cleanup;
     }
 
-    if (PEER_CONNECTION_RESULT_OK != PeerConnection_Start(&session)) {
+    if (PEER_CONNECTION_RESULT_OK != PeerConnection_Start(session)) {
         printf("[webrtc] PeerConnection_Start failed\n");
         goto cleanup;
     }
 
     signaling_bridge.sig = sig;
-    signaling_set_peer_connection(sig, &session);
+    signaling_set_peer_connection(sig, session);
 
     printf("[webrtc] waiting for SDP offer...\n");
     if (0 != signaling_wait_for_offer(sig, offer_sdp, APP_WEBRTC_SDP_BUF_LEN, &offer_len)) {
@@ -423,7 +423,7 @@ static int run_session(void) {
 
     size_t answer_len = PEER_CONNECTION_SDP_DESCRIPTION_BUFFER_MAX_LENGTH;
     if (0 != build_answer_from_offer(
-        &session,
+        session,
         offer_sdp,
         offer_len,
         local_desc_buffer,
@@ -441,12 +441,13 @@ static int run_session(void) {
         goto cleanup;
     }
 
+    PeerConnectionBufferSessionDescription_t remote_desc;
     memset(&remote_desc, 0, sizeof(remote_desc));
     remote_desc.pSdpBuffer = offer_sdp;
     remote_desc.sdpBufferLength = offer_len;
     remote_desc.type = SDP_CONTROLLER_MESSAGE_TYPE_OFFER;
 
-    if (PEER_CONNECTION_RESULT_OK != PeerConnection_SetRemoteDescription(&session, &remote_desc)) {
+    if (PEER_CONNECTION_RESULT_OK != PeerConnection_SetRemoteDescription(session, &remote_desc)) {
         printf("[webrtc] PeerConnection_SetRemoteDescription failed\n");
         goto cleanup;
     }
@@ -472,7 +473,7 @@ cleanup:
     }
     signaling_bridge.sig = NULL;
     if (peer_connection_inited) {
-        (void) PeerConnection_CloseSession(&session);
+        (void) PeerConnection_CloseSession(session);
     }
     if (NULL != sig) {
         signaling_disconnect(sig);

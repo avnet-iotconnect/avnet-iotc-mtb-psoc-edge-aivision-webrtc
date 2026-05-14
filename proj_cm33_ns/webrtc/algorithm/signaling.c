@@ -94,6 +94,70 @@
 // "host:\nx-amz-date:\nx-amz-security-token:\n\0" = ~57 chars; 64 is safe.
 #define SIG_CANON_HDR_OVERHEAD 64
 
+// KVS senderClientId is uuid-shaped (~36 chars). 64 covers any drift; bigger
+// would be wasted in a struct that lives for the connection lifetime.
+#define SIG_CLIENT_ID_MAX 64
+#define SIG_WS_MUTEX_TIMEOUT_MS 500U
+
+// WSS upgrade transport constants.
+#define WSS_PORT 443
+#define WSS_RFC6455_GUID "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+#define WSS_NONCE_LEN 16
+#define WSS_NONCE_B64_LEN 25  /* base64(16) = 24 + null */
+#define WSS_ACCEPT_B64_LEN 29 /* base64(SHA1=20) = 28 + null */
+
+// Per-call socket timeouts (ms). These are set once at cy_awsport_network_connect
+// time and apply to every send/recv after that — the secure-sockets API has no
+// way to retune them later. A short recv timeout is what lets the wslay event
+// loop poll without blocking forever; a 0 from cy_awsport_network_receive maps
+// cleanly to WSLAY_ERR_WOULDBLOCK so the loop can yield and retry.
+//
+// The handshake recv has to gather a multi-part response, so it loops up to
+// WSS_HANDSHAKE_BUDGET_MS of wall-clock time, swallowing per-call timeouts.
+#define WSS_SOCK_SEND_TIMEOUT_MS 2000U
+#define WSS_SOCK_RECV_TIMEOUT_MS 200U
+#define WSS_HANDSHAKE_BUDGET_MS 5000U
+
+// Fixed overhead in the upgrade request: method/version/literal headers/CRLFs.
+// "GET  HTTP/1.1\r\n" + Host: \r\n + Upgrade: websocket\r\n + Connection: Upgrade\r\n
+// + Sec-WebSocket-Key: <24>\r\n + Sec-WebSocket-Version: 13\r\n + \r\n. ~150 bytes;
+// 256 leaves headroom for accidental drift in the header set.
+#define WSS_REQ_FIXED_OVERHEAD 256
+
+// Response head only — we read until "\r\n\r\n" then stop. AWS' 101 response
+// is ~200 bytes (a handful of headers); 1 KB is generous.
+#define WSS_RESP_BUF_LEN 1024
+
+// transport_error bumps to non-zero whenever the wslay recv/send callback
+// observes a hard error on the underlying socket. signaling_wait_for_offer
+// treats this as fatal; everything else (timeout, no message yet) is "keep
+// polling".
+//
+// SDP offer plumbing: KVS bursts several frames (often ICE_CANDIDATE *and*
+// SDP_OFFER) inside one wslay_event_recv call, firing on_msg_recv for each.
+// We dispatch synchronously from on_msg_recv (matching the Ameba/N6 reference
+// pattern) into the caller's SDP buffer, since a single-slot latch silently
+// dropped earlier frames in the burst — typically the SDP_OFFER itself.
+struct SignalingCtx {
+    NetworkContext_t net_ctx;
+    wslay_event_context_ptr ws_ctx;
+    SemaphoreHandle_t ws_mutex;
+    bool connected;
+    bool transport_error;
+    // Caller's SDP buffer for the in-flight signaling_wait_for_offer call.
+    // Populated by on_msg_recv when an SDP_OFFER envelope arrives; offer_ready
+    // flips true and the wait loop returns. NULL outside of wait_for_offer.
+    char *offer_sdp_buf;
+    size_t offer_sdp_cap;
+    size_t offer_sdp_len;
+    bool offer_ready;
+    // senderClientId of the viewer that sent the latched offer. Consumed by
+    // signaling_send_answer to fill RecipientClientId.
+    char peer_client_id[SIG_CLIENT_ID_MAX];
+    size_t peer_client_id_len;
+    PeerConnectionSession_t *peer_connection_session;
+};
+
 // File-scope statics for predictable-size scratch used inside
 // signaling_resolve_endpoint. One call at a time (single WebRTC task).
 static char s_url_buf[SIG_URL_BUF];
@@ -104,6 +168,7 @@ static char s_body_buf[SIG_BODY_BUF];
 // SigV4 fills the buffer completely and we still need somewhere for the '\0'.
 static char s_auth_buf[SIG_AUTH_BUF + 1];
 static mbedtls_sha256_context s_sha_ctx;
+static struct SignalingCtx g_sig;
 
 // -------------------------------------------------------------------------
 // mbedTLS SHA-256 callbacks (same pattern as webrtc_smoke_test.c)
@@ -606,73 +671,6 @@ enc_fail:
 // Today's signaling_connect() opens the TLS connection, runs the upgrade,
 // verifies Sec-WebSocket-Accept, then tears down. This proves the transport
 // path end-to-end ahead of wiring wslay.
-
-#define WSS_PORT                    443
-#define WSS_RFC6455_GUID            "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-#define WSS_NONCE_LEN               16
-#define WSS_NONCE_B64_LEN           25  /* base64(16) = 24 + null */
-#define WSS_ACCEPT_B64_LEN          29  /* base64(SHA1=20) = 28 + null */
-
-// Per-call socket timeouts (ms). These are set once at cy_awsport_network_connect
-// time and apply to every send/recv after that — the secure-sockets API has no
-// way to retune them later. A short recv timeout is what lets the wslay event
-// loop poll without blocking forever; a 0 from cy_awsport_network_receive maps
-// cleanly to WSLAY_ERR_WOULDBLOCK so the loop can yield and retry.
-//
-// The handshake recv has to gather a multi-part response, so it loops up to
-// WSS_HANDSHAKE_BUDGET_MS of wall-clock time, swallowing per-call timeouts.
-#define WSS_SOCK_SEND_TIMEOUT_MS    2000U
-#define WSS_SOCK_RECV_TIMEOUT_MS    200U
-#define WSS_HANDSHAKE_BUDGET_MS     5000U
-
-
-// Fixed overhead in the upgrade request: method/version/literal headers/CRLFs.
-// "GET  HTTP/1.1\r\n" + Host: \r\n + Upgrade: websocket\r\n + Connection: Upgrade\r\n
-// + Sec-WebSocket-Key: <24>\r\n + Sec-WebSocket-Version: 13\r\n + \r\n. ~150 bytes;
-// 256 leaves headroom for accidental drift in the header set.
-#define WSS_REQ_FIXED_OVERHEAD      256
-
-// Response head only — we read until "\r\n\r\n" then stop. AWS' 101 response
-// is ~200 bytes (a handful of headers); 1 KB is generous.
-#define WSS_RESP_BUF_LEN            1024
-
-
-// KVS senderClientId is uuid-shaped (~36 chars). 64 covers any drift; bigger
-// would be wasted in a struct that lives for the connection lifetime.
-#define SIG_CLIENT_ID_MAX           64
-#define SIG_WS_MUTEX_TIMEOUT_MS     500U
-
-// transport_error bumps to non-zero whenever the wslay recv/send callback
-// observes a hard error on the underlying socket. signaling_wait_for_offer
-// treats this as fatal; everything else (timeout, no message yet) is "keep
-// polling".
-//
-// SDP offer plumbing: KVS bursts several frames (often ICE_CANDIDATE *and*
-// SDP_OFFER) inside one wslay_event_recv call, firing on_msg_recv for each.
-// We dispatch synchronously from on_msg_recv (matching the Ameba/N6 reference
-// pattern) into the caller's SDP buffer, since a single-slot latch silently
-// dropped earlier frames in the burst — typically the SDP_OFFER itself.
-struct SignalingCtx {
-    NetworkContext_t net_ctx;
-    wslay_event_context_ptr ws_ctx;
-    SemaphoreHandle_t ws_mutex;
-    bool connected;
-    bool transport_error;
-    // Caller's SDP buffer for the in-flight signaling_wait_for_offer call.
-    // Populated by on_msg_recv when an SDP_OFFER envelope arrives; offer_ready
-    // flips true and the wait loop returns. NULL outside of wait_for_offer.
-    char *offer_sdp_buf;
-    size_t offer_sdp_cap;
-    size_t offer_sdp_len;
-    bool offer_ready;
-    // senderClientId of the viewer that sent the latched offer. Consumed by
-    // signaling_send_answer to fill RecipientClientId.
-    char peer_client_id[SIG_CLIENT_ID_MAX];
-    size_t peer_client_id_len;
-    PeerConnectionSession_t *peer_connection_session;
-};
-
-static struct SignalingCtx g_sig;
 
 
 static int signaling_lock(SignalingHandle sig, TickType_t wait_ticks) {
