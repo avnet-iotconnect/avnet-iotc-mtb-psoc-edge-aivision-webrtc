@@ -35,6 +35,7 @@
 #include <time.h>
 
 #include "FreeRTOS.h"
+#include "semphr.h"
 #include "task.h"
 
 #include "mbedtls/base64.h"
@@ -639,6 +640,7 @@ enc_fail:
 // KVS senderClientId is uuid-shaped (~36 chars). 64 covers any drift; bigger
 // would be wasted in a struct that lives for the connection lifetime.
 #define SIG_CLIENT_ID_MAX           64
+#define SIG_WS_MUTEX_TIMEOUT_MS     500U
 
 // transport_error bumps to non-zero whenever the wslay recv/send callback
 // observes a hard error on the underlying socket. signaling_wait_for_offer
@@ -653,6 +655,7 @@ enc_fail:
 struct SignalingCtx {
     NetworkContext_t net_ctx;
     wslay_event_context_ptr ws_ctx;
+    SemaphoreHandle_t ws_mutex;
     bool connected;
     bool transport_error;
     // Caller's SDP buffer for the in-flight signaling_wait_for_offer call.
@@ -672,12 +675,43 @@ struct SignalingCtx {
 static struct SignalingCtx g_sig;
 
 
+static int signaling_lock(SignalingHandle sig, TickType_t wait_ticks) {
+    if (NULL == sig || NULL == sig->ws_mutex) {
+        return -1;
+    }
+
+    if (pdTRUE != xSemaphoreTake(sig->ws_mutex, wait_ticks)) {
+        printf("[signaling] ws mutex timeout\n");
+        return -1;
+    }
+
+    return 0;
+}
+
+
+static void signaling_unlock(SignalingHandle sig) {
+    if (NULL != sig && NULL != sig->ws_mutex) {
+        xSemaphoreGive(sig->ws_mutex);
+    }
+}
+
+
 void signaling_set_peer_connection(SignalingHandle sig, PeerConnectionSession_t *session) {
     if (NULL == sig) {
         return;
     }
 
+    if (NULL != sig->ws_mutex) {
+        if (0 != signaling_lock(sig, portMAX_DELAY)) {
+            return;
+        }
+    }
+
     sig->peer_connection_session = session;
+
+    if (NULL != sig->ws_mutex) {
+        signaling_unlock(sig);
+    }
 }
 
 // Split a "wss://<host>/<path-and-query>" URL into a malloc'd host and a
@@ -1056,6 +1090,14 @@ SignalingHandle signaling_connect(const char *signed_url) {
         return NULL;
     }
 
+    if (NULL == g_sig.ws_mutex) {
+        g_sig.ws_mutex = xSemaphoreCreateMutex();
+        if (NULL == g_sig.ws_mutex) {
+            printf("[signaling] failed to create ws mutex\n");
+            return NULL;
+        }
+    }
+
     char *host = NULL;
     const char *path = NULL;
     if (0 != wss_url_split(signed_url, &host, &path)) {
@@ -1241,6 +1283,11 @@ void signaling_disconnect(SignalingHandle sig) {
     if (NULL == sig || !sig->connected) {
         return;
     }
+
+    if (0 != signaling_lock(sig, portMAX_DELAY)) {
+        return;
+    }
+
     if (NULL != sig->ws_ctx) {
         wslay_event_context_free(sig->ws_ctx);
         sig->ws_ctx = NULL;
@@ -1253,6 +1300,8 @@ void signaling_disconnect(SignalingHandle sig) {
     cy_awsport_network_disconnect(&sig->net_ctx);
     cy_awsport_network_delete(&sig->net_ctx);
     sig->connected = false;
+
+    signaling_unlock(sig);
 }
 
 // -------------------------------------------------------------------------
@@ -1290,18 +1339,38 @@ int signaling_wait_for_offer(SignalingHandle sig, char *out_sdp, size_t out_sdp_
 
     // Park the caller's buffer where dispatch_text_frame can find it. Cleared
     // before we return so a stale pointer can't survive between sessions.
+    if (0 != signaling_lock(sig, portMAX_DELAY)) {
+        return -1;
+    }
     sig->offer_sdp_buf = out_sdp;
     sig->offer_sdp_cap = out_sdp_cap;
     sig->offer_sdp_len = 0;
     sig->offer_ready = false;
+    signaling_unlock(sig);
 
     int rc;
     for (;;) {
+        bool offer_ready;
+        bool transport_error;
+        bool peer_closed;
+
+        if (0 != signaling_lock(sig, pdMS_TO_TICKS(SIG_WS_MUTEX_TIMEOUT_MS))) {
+            rc = -1;
+            goto out;
+        }
+
+        if (!sig->connected || NULL == sig->ws_ctx) {
+            signaling_unlock(sig);
+            rc = -1;
+            goto out;
+        }
+
         // Send any queued frames first (close, pong, future messages).
         if (wslay_event_want_write(sig->ws_ctx)) {
             int wrc = wslay_event_send(sig->ws_ctx);
             if (0 != wrc && !sig->offer_ready) {
                 printf("[sig] wslay_event_send rc=%d\n", wrc);
+                signaling_unlock(sig);
                 rc = -1;
                 goto out;
             }
@@ -1312,12 +1381,19 @@ int signaling_wait_for_offer(SignalingHandle sig, char *out_sdp, size_t out_sdp_
             recv_err = wslay_event_recv(sig->ws_ctx);
         }
 
+        offer_ready = sig->offer_ready;
+        transport_error = sig->transport_error;
+        peer_closed = !wslay_event_want_read(sig->ws_ctx) && !wslay_event_want_write(sig->ws_ctx);
+        if (offer_ready) {
+            *out_sdp_len = sig->offer_sdp_len;
+        }
+        signaling_unlock(sig);
+
         // dispatch_text_frame fires synchronously inside wslay_event_recv,
         // potentially multiple times per call when KVS bursts frames. Check
         // offer_ready before treating an error as fatal — once we have the
         // offer the socket close that often follows is irrelevant.
-        if (sig->offer_ready) {
-            *out_sdp_len = sig->offer_sdp_len;
+        if (offer_ready) {
             rc = 0;
             goto out;
         }
@@ -1329,12 +1405,12 @@ int signaling_wait_for_offer(SignalingHandle sig, char *out_sdp, size_t out_sdp_
             goto out;
         }
 
-        if (sig->transport_error) {
+        if (transport_error) {
             rc = -1;
             goto out;
         }
 
-        if (!wslay_event_want_read(sig->ws_ctx) && !wslay_event_want_write(sig->ws_ctx)) {
+        if (peer_closed) {
             // Read+write both disabled — peer closed cleanly, nothing left.
             printf("[sig] peer close, read+write both disabled\n");
             rc = -1;
@@ -1351,8 +1427,11 @@ out:
     printf("[sig] wait_for_offer exit rc=%d offer_ready=%d\n",
            rc, (int) sig->offer_ready);
     // Drop the parked buffer — it's only valid for the duration of this call.
-    sig->offer_sdp_buf = NULL;
-    sig->offer_sdp_cap = 0;
+    if (0 == signaling_lock(sig, portMAX_DELAY)) {
+        sig->offer_sdp_buf = NULL;
+        sig->offer_sdp_cap = 0;
+        signaling_unlock(sig);
+    }
     return rc;
 }
 
@@ -1360,13 +1439,24 @@ int signaling_tick(SignalingHandle sig) {
     if (NULL == sig || !sig->connected || NULL == sig->ws_ctx) {
         return -1;
     }
+
+    if (0 != signaling_lock(sig, pdMS_TO_TICKS(SIG_WS_MUTEX_TIMEOUT_MS))) {
+        return -1;
+    }
+
+    if (!sig->connected || NULL == sig->ws_ctx) {
+        signaling_unlock(sig);
+        return -1;
+    }
     if (sig->transport_error) {
+        signaling_unlock(sig);
         return -1;
     }
     if (wslay_event_want_write(sig->ws_ctx)) {
         int wrc = wslay_event_send(sig->ws_ctx);
         if (0 != wrc) {
             printf("[sig] tick: wslay_event_send rc=%d\n", wrc);
+            signaling_unlock(sig);
             return -1;
         }
     }
@@ -1374,13 +1464,17 @@ int signaling_tick(SignalingHandle sig) {
         int wrc = wslay_event_recv(sig->ws_ctx);
         if (0 != wrc) {
             printf("[sig] tick: wslay_event_recv rc=%d\n", wrc);
+            signaling_unlock(sig);
             return -1;
         }
     }
-    if (sig->transport_error) {
+    bool transport_error = sig->transport_error;
+    bool peer_closed = !wslay_event_want_read(sig->ws_ctx) && !wslay_event_want_write(sig->ws_ctx);
+    signaling_unlock(sig);
+    if (transport_error) {
         return -1;
     }
-    if (!wslay_event_want_read(sig->ws_ctx) && !wslay_event_want_write(sig->ws_ctx)) {
+    if (peer_closed) {
         // Peer closed cleanly.
         printf("[sig] tick: peer close (read+write disabled)\n");
         return -1;
@@ -1390,18 +1484,40 @@ int signaling_tick(SignalingHandle sig) {
 
 
 int signaling_send_answer(SignalingHandle sig, const char *sdp_answer) {
+    char peer_client_id[SIG_CLIENT_ID_MAX];
+    size_t peer_client_id_len;
+
     if (NULL == sig || NULL == sdp_answer || !sig->connected || NULL == sig->ws_ctx) {
         printf("[signaling] send_answer: bad args or not connected (sig=%p, sdp=%p, connected=%d, ws=%p)\n",
                (void*)sig, (void*)sdp_answer, sig ? (int)sig->connected : -1, sig ? (void*)sig->ws_ctx : NULL);
         return -1;
     }
-    if (sig->transport_error) {
-        printf("[signaling] send_answer: transport already in error\n");
+
+    if (0 != signaling_lock(sig, pdMS_TO_TICKS(SIG_WS_MUTEX_TIMEOUT_MS))) {
         return -1;
     }
+
+    if (!sig->connected || NULL == sig->ws_ctx) {
+        signaling_unlock(sig);
+        return -1;
+    }
+    if (sig->transport_error) {
+        printf("[signaling] send_answer: transport already in error\n");
+        signaling_unlock(sig);
+        return -1;
+    }
+    peer_client_id_len = sig->peer_client_id_len;
+    if (peer_client_id_len >= sizeof(peer_client_id)) {
+        signaling_unlock(sig);
+        return -1;
+    }
+    memcpy(peer_client_id, sig->peer_client_id, peer_client_id_len);
+    peer_client_id[peer_client_id_len] = '\0';
+    signaling_unlock(sig);
+
     printf("[signaling] send_answer: peer_client_id='%.*s' (len=%u)\n",
-           (int)sig->peer_client_id_len, sig->peer_client_id,
-           (unsigned)sig->peer_client_id_len);
+           (int) peer_client_id_len, peer_client_id,
+           (unsigned) peer_client_id_len);
     printf("[signaling] send_answer: starting (sdp_len=%u)\n", (unsigned) strlen(sdp_answer));
 
     size_t sdp_len = strlen(sdp_answer);
@@ -1427,7 +1543,7 @@ int signaling_send_answer(SignalingHandle sig, const char *sdp_answer) {
 
     // Wrap in the KVS WSS send envelope. JSON skeleton (action/keys/braces/
     // quotes/commas) is ~80 bytes; flat 256 leaves headroom for KVS docs drift.
-    size_t env_cap = b64_len + sig->peer_client_id_len + 256;
+    size_t env_cap = b64_len + peer_client_id_len + 256;
     char *env_buf = malloc(env_cap);
     if (NULL == env_buf) {
         printf("[signaling] OOM for envelope buffer (%u bytes)\n", (unsigned) env_cap);
@@ -1436,8 +1552,8 @@ int signaling_send_answer(SignalingHandle sig, const char *sdp_answer) {
     }
     WssSendMessage_t send_msg = {
         .messageType                = SIGNALING_TYPE_MESSAGE_SDP_ANSWER,
-        .pRecipientClientId         = sig->peer_client_id,
-        .recipientClientIdLength    = sig->peer_client_id_len,
+        .pRecipientClientId         = peer_client_id,
+        .recipientClientIdLength    = peer_client_id_len,
         .pBase64EncodedMessage      = b64_buf,
         .base64EncodedMessageLength = b64_len,
         .pCorrelationId             = NULL,
@@ -1461,7 +1577,18 @@ int signaling_send_answer(SignalingHandle sig, const char *sdp_answer) {
         .msg        = (const uint8_t *) env_buf,
         .msg_length = env_len,
     };
+
+    if (0 != signaling_lock(sig, pdMS_TO_TICKS(SIG_WS_MUTEX_TIMEOUT_MS))) {
+        free(env_buf);
+        return -1;
+    }
+    if (!sig->connected || NULL == sig->ws_ctx || sig->transport_error) {
+        signaling_unlock(sig);
+        free(env_buf);
+        return -1;
+    }
     int wrc = wslay_event_queue_msg(sig->ws_ctx, &ws_msg);
+    signaling_unlock(sig);
     free(env_buf);
     if (0 != wrc) {
         printf("[signaling] wslay_event_queue_msg failed: %d\n", wrc);
@@ -1477,14 +1604,35 @@ int signaling_send_ice_candidate(
     const char *sdp_mid,
     int sdp_m_line_index
 ) {
+    char peer_client_id[SIG_CLIENT_ID_MAX];
+    size_t peer_client_id_len;
+
     if (NULL == sig || NULL == candidate || NULL == sdp_mid
         || !sig->connected || NULL == sig->ws_ctx) {
         return -1;
     }
-    if (sig->transport_error) {
-        printf("[signaling] send_ice_candidate: transport already in error\n");
+
+    if (0 != signaling_lock(sig, pdMS_TO_TICKS(SIG_WS_MUTEX_TIMEOUT_MS))) {
         return -1;
     }
+
+    if (!sig->connected || NULL == sig->ws_ctx) {
+        signaling_unlock(sig);
+        return -1;
+    }
+    if (sig->transport_error) {
+        printf("[signaling] send_ice_candidate: transport already in error\n");
+        signaling_unlock(sig);
+        return -1;
+    }
+    peer_client_id_len = sig->peer_client_id_len;
+    if (peer_client_id_len >= sizeof(peer_client_id)) {
+        signaling_unlock(sig);
+        return -1;
+    }
+    memcpy(peer_client_id, sig->peer_client_id, peer_client_id_len);
+    peer_client_id[peer_client_id_len] = '\0';
+    signaling_unlock(sig);
 
     /* Build the inner JSON payload that the browser's signaling layer parses
      * into RTCIceCandidateInit. The senderClientId / messagePayload envelope
@@ -1524,7 +1672,7 @@ int signaling_send_ice_candidate(
         return -1;
     }
 
-    size_t env_cap = b64_len + sig->peer_client_id_len + 256;
+    size_t env_cap = b64_len + peer_client_id_len + 256;
     char *env_buf = malloc(env_cap);
     if (NULL == env_buf) {
         printf("[signaling] OOM for ice envelope (%u bytes)\n", (unsigned) env_cap);
@@ -1533,8 +1681,8 @@ int signaling_send_ice_candidate(
     }
     WssSendMessage_t send_msg = {
         .messageType                = SIGNALING_TYPE_MESSAGE_ICE_CANDIDATE,
-        .pRecipientClientId         = sig->peer_client_id,
-        .recipientClientIdLength    = sig->peer_client_id_len,
+        .pRecipientClientId         = peer_client_id,
+        .recipientClientIdLength    = peer_client_id_len,
         .pBase64EncodedMessage      = b64_buf,
         .base64EncodedMessageLength = b64_len,
         .pCorrelationId             = NULL,
@@ -1554,7 +1702,18 @@ int signaling_send_ice_candidate(
         .msg        = (const uint8_t *) env_buf,
         .msg_length = env_len,
     };
+
+    if (0 != signaling_lock(sig, pdMS_TO_TICKS(SIG_WS_MUTEX_TIMEOUT_MS))) {
+        free(env_buf);
+        return -1;
+    }
+    if (!sig->connected || NULL == sig->ws_ctx || sig->transport_error) {
+        signaling_unlock(sig);
+        free(env_buf);
+        return -1;
+    }
     int wrc = wslay_event_queue_msg(sig->ws_ctx, &ws_msg);
+    signaling_unlock(sig);
     free(env_buf);
     if (0 != wrc) {
         printf("[signaling] wslay_event_queue_msg (ICE) failed: %d\n", wrc);

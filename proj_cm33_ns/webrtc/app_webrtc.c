@@ -20,10 +20,12 @@
 
 #include "aws_creds.h"
 #include "csprng.h"
+#include "ice_data_types.h"
 #include "ice_controller.h"
 #include "peer_connection.h"
 #include "peer_connection_sdp.h"
 #include "signaling.h"
+#include "stun_data_types.h"
 #include "transceiver_data_types.h"
 
 #define APP_WEBRTC_WSS_ENDPOINT_LEN 256U
@@ -32,6 +34,7 @@
 
 #define APP_WEBRTC_TRANSCEIVER_STREAM_ID "myKvsVideoStream"
 #define APP_WEBRTC_TRANSCEIVER_VIDEO_TRACK_ID "myVideoTrack"
+#define APP_WEBRTC_TRANSCEIVER_VIDEO_MID "0"
 #define APP_WEBRTC_TRANSCEIVER_ROLLING_BUFFER_SEC 3U
 #define APP_WEBRTC_TRANSCEIVER_H264_BITRATE_BPS (1400U * 1024U)
 
@@ -42,6 +45,7 @@
 #define APP_WEBRTC_POLL_IDLE_MS 20U
 #define APP_WEBRTC_BACKOFF_MS 1000U
 #define APP_WEBRTC_STOP_TIMEOUT_MS 5000U
+#define APP_WEBRTC_LOCAL_CANDIDATE_BUF_LEN 192U
 
 static TaskHandle_t s_webrtc_task = NULL;
 static volatile bool s_start_requested = false;
@@ -49,6 +53,12 @@ static volatile bool s_creds_dirty = false;
 static bool s_csprng_ready = false;
 static char s_wss_endpoint[APP_WEBRTC_WSS_ENDPOINT_LEN];
 static SignalingHandle s_active_signaling = NULL;
+
+typedef struct AppWebrtcSignalingBridge {
+    SignalingHandle sig;
+    const char *sdp_mid;
+    int sdp_m_line_index;
+} AppWebrtcSignalingBridge_t;
 
 
 // Pull the cached IoTC-discovered AWS triplet and channel ARN into our local
@@ -148,6 +158,113 @@ static void init_video_transceiver(Transceiver_t *out_transceiver) {
 }
 
 
+static const char *local_candidate_type_string(IceCandidateType_t candidate_type) {
+    switch (candidate_type) {
+        case ICE_CANDIDATE_TYPE_HOST:
+            return "host";
+        case ICE_CANDIDATE_TYPE_SERVER_REFLEXIVE:
+            return "srflx";
+        case ICE_CANDIDATE_TYPE_PEER_REFLEXIVE:
+            return "prflx";
+        case ICE_CANDIDATE_TYPE_RELAY:
+            return "relay";
+        default:
+            return "unknown";
+    }
+}
+
+
+static int format_local_candidate_ip(const IceCandidate_t *candidate, char *ip_buf, size_t ip_buf_len) {
+    if (NULL == candidate || NULL == ip_buf || ip_buf_len < 16U) {
+        return -1;
+    }
+
+    if (STUN_ADDRESS_IPv4 != candidate->endpoint.transportAddress.family) {
+        printf("[webrtc] local ICE candidate family %d not supported for signaling\n",
+               (int) candidate->endpoint.transportAddress.family);
+        return -1;
+    }
+
+    const uint8_t *ip = candidate->endpoint.transportAddress.address;
+    int ip_len = snprintf(ip_buf, ip_buf_len, "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
+    if (ip_len <= 0 || (size_t) ip_len >= ip_buf_len) {
+        return -1;
+    }
+
+    return 0;
+}
+
+
+static int serialize_local_candidate(
+    const PeerConnectionIceLocalCandidate_t *local_candidate,
+    char *candidate_buf,
+    size_t candidate_buf_len
+) {
+    char ip_buf[16];
+    const IceCandidate_t *candidate;
+    const char *candidate_type;
+
+    if (NULL == local_candidate || NULL == candidate_buf || candidate_buf_len < 2U) {
+        return -1;
+    }
+
+    candidate = local_candidate->pLocalCandidate;
+    if (NULL == candidate) {
+        return -1;
+    }
+
+    if (0 != format_local_candidate_ip(candidate, ip_buf, sizeof(ip_buf))) {
+        return -1;
+    }
+
+    candidate_type = local_candidate_type_string(candidate->candidateType);
+
+    // fork-aivision: current S7 flow advertises one sendonly video m-line and
+    // only enables UDP host candidates in pc_config, so a single fixed
+    // component/protocol candidate string is sufficient for trickle signaling.
+    int candidate_len = snprintf(
+        candidate_buf,
+        candidate_buf_len,
+        "candidate:%u 1 udp %lu %s %u typ %s",
+        (unsigned int) local_candidate->localCandidateIndex,
+        (unsigned long) candidate->priority,
+        ip_buf,
+        (unsigned int) candidate->endpoint.transportAddress.port,
+        candidate_type
+    );
+    if (candidate_len <= 0 || (size_t) candidate_len >= candidate_buf_len) {
+        return -1;
+    }
+
+    return 0;
+}
+
+
+static void on_local_candidate_ready(void *context, PeerConnectionIceLocalCandidate_t *local_candidate) {
+    AppWebrtcSignalingBridge_t *bridge = (AppWebrtcSignalingBridge_t *) context;
+    char candidate_buf[APP_WEBRTC_LOCAL_CANDIDATE_BUF_LEN];
+
+    if (NULL == bridge || NULL == bridge->sig || NULL == local_candidate) {
+        return;
+    }
+
+    if (0 != serialize_local_candidate(local_candidate, candidate_buf, sizeof(candidate_buf))) {
+        printf("[webrtc] failed to serialize local ICE candidate\n");
+        return;
+    }
+
+    printf("[webrtc] local ICE candidate ready: %s\n", candidate_buf);
+    if (0 != signaling_send_ice_candidate(
+        bridge->sig,
+        candidate_buf,
+        bridge->sdp_mid,
+        bridge->sdp_m_line_index
+    )) {
+        printf("[webrtc] signaling_send_ice_candidate failed\n");
+    }
+}
+
+
 static int build_answer_from_offer(
     PeerConnectionSession_t *session,
     char *offer_sdp,
@@ -221,7 +338,13 @@ static int run_session(void) {
     SignalingHandle sig = NULL;
     PeerConnectionSession_t session;
     PeerConnectionSessionConfiguration_t pc_config;
+    PeerConnectionBufferSessionDescription_t remote_desc;
     Transceiver_t video_transceiver;
+    AppWebrtcSignalingBridge_t signaling_bridge = {
+        .sig = NULL,
+        .sdp_mid = APP_WEBRTC_TRANSCEIVER_VIDEO_MID,
+        .sdp_m_line_index = 0,
+    };
     bool peer_connection_inited = false;
     size_t offer_len = 0;
     int rc = -1;
@@ -261,12 +384,6 @@ static int run_session(void) {
 
     s_active_signaling = sig;
 
-    printf("[webrtc] waiting for SDP offer...\n");
-    if (0 != signaling_wait_for_offer(sig, offer_sdp, APP_WEBRTC_SDP_BUF_LEN, &offer_len)) {
-        printf("[webrtc] signaling_wait_for_offer failed\n");
-        goto cleanup;
-    }
-
     memset(&pc_config, 0, sizeof(pc_config));
     pc_config.canTrickleIce = 1U;
     pc_config.natTraversalConfigBitmap =
@@ -285,14 +402,25 @@ static int run_session(void) {
         goto cleanup;
     }
 
+    if (PEER_CONNECTION_RESULT_OK != PeerConnection_SetOnLocalCandidateReady(&session, on_local_candidate_ready, &signaling_bridge)) {
+        printf("[webrtc] PeerConnection_SetOnLocalCandidateReady failed\n");
+        goto cleanup;
+    }
+
     if (PEER_CONNECTION_RESULT_OK != PeerConnection_Start(&session)) {
         printf("[webrtc] PeerConnection_Start failed\n");
         goto cleanup;
     }
 
-    // fork-aivision: S6b stops at offer->answer. Keep signaling attached only
-    // to the WSS socket for now; the peer-session/trickle-ICE bridge lands
-    // with the later lifecycle + ICE adaptation work.
+    signaling_bridge.sig = sig;
+    signaling_set_peer_connection(sig, &session);
+
+    printf("[webrtc] waiting for SDP offer...\n");
+    if (0 != signaling_wait_for_offer(sig, offer_sdp, APP_WEBRTC_SDP_BUF_LEN, &offer_len)) {
+        printf("[webrtc] signaling_wait_for_offer failed\n");
+        goto cleanup;
+    }
+
     size_t answer_len = PEER_CONNECTION_SDP_DESCRIPTION_BUFFER_MAX_LENGTH;
     if (0 != build_answer_from_offer(
         &session,
@@ -313,6 +441,20 @@ static int run_session(void) {
         goto cleanup;
     }
 
+    memset(&remote_desc, 0, sizeof(remote_desc));
+    remote_desc.pSdpBuffer = offer_sdp;
+    remote_desc.sdpBufferLength = offer_len;
+    remote_desc.type = SDP_CONTROLLER_MESSAGE_TYPE_OFFER;
+
+    if (PEER_CONNECTION_RESULT_OK != PeerConnection_SetRemoteDescription(&session, &remote_desc)) {
+        printf("[webrtc] PeerConnection_SetRemoteDescription failed\n");
+        goto cleanup;
+    }
+
+    // fork-aivision: once the remote description is installed, PeerConnection
+    // owns the internal ICE/timer/session-task lifecycle. The app task only
+    // needs to keep the WSS signaling pump alive so trickle ICE and control
+    // frames continue to flow.
     printf("[webrtc] answer queued (%d bytes), entering signaling tick loop\n", (int) answer_len);
     while (s_start_requested) {
         if (0 != signaling_tick(sig)) {
@@ -325,6 +467,10 @@ static int run_session(void) {
     rc = 0;
 
 cleanup:
+    if (NULL != sig) {
+        signaling_set_peer_connection(sig, NULL);
+    }
+    signaling_bridge.sig = NULL;
     if (peer_connection_inited) {
         (void) PeerConnection_CloseSession(&session);
     }
