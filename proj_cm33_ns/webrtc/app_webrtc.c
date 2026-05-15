@@ -55,12 +55,45 @@ static bool s_csprng_ready = false;
 static char s_wss_endpoint[APP_WEBRTC_WSS_ENDPOINT_LEN];
 static SignalingHandle s_active_signaling = NULL;
 static PeerConnectionSession_t s_peer_connection_session;
+// fork-aivision: temporary single-session scratch moved out of the WebRTC task
+// stack. The imported protocol structs below embed large fixed arrays, and the
+// current pilot runs only one WebRTC session/task at a time.
+static PeerConnectionSessionConfiguration_t s_pc_config_scratch;
+static Transceiver_t s_video_transceiver_scratch;
+static PeerConnectionBufferSessionDescription_t s_answer_remote_desc_scratch;
+static PeerConnectionBufferSessionDescription_t s_answer_local_desc_scratch;
+static PeerConnectionBufferSessionDescription_t s_set_remote_desc_scratch;
 
 typedef struct AppWebrtcSignalingBridge {
     SignalingHandle sig;
     const char *sdp_mid;
     int sdp_m_line_index;
 } AppWebrtcSignalingBridge_t;
+
+
+static void log_webrtc_size_info(void) {
+    const size_t task_stack_bytes = WEBRTC_TASK_STACK_W * sizeof(StackType_t);
+    const size_t scratch_bytes =
+        sizeof(s_pc_config_scratch)
+        + sizeof(s_video_transceiver_scratch)
+        + sizeof(s_answer_remote_desc_scratch)
+        + sizeof(s_answer_local_desc_scratch)
+        + sizeof(s_set_remote_desc_scratch);
+
+    printf("[webrtc] task stack cfg: %u B (~%u KiB)\n",
+           (unsigned int) task_stack_bytes,
+           (unsigned int) task_stack_bytes / 1024U);
+    printf("[webrtc] sizeof(pc_config)=%u B (~%u KiB), sizeof(transceiver)=%u B (~%u KiB)\n",
+           (unsigned int) sizeof(s_pc_config_scratch),
+           (unsigned int) sizeof(s_pc_config_scratch) / 1024U,
+           (unsigned int) sizeof(s_video_transceiver_scratch),
+           (unsigned int) sizeof(s_video_transceiver_scratch) / 1024U);
+    printf("[webrtc] sizeof(session_desc)=%u B (~%u KiB), scratch total=%u B (~%u KiB)\n",
+           (unsigned int) sizeof(s_answer_remote_desc_scratch),
+           (unsigned int) sizeof(s_answer_remote_desc_scratch) / 1024U,
+           (unsigned int) scratch_bytes,
+           (unsigned int) scratch_bytes / 1024U);
+}
 
 
 // Pull the cached IoTC-discovered AWS triplet and channel ARN into our local
@@ -277,27 +310,29 @@ static int build_answer_from_offer(
     size_t answer_buffer_len,
     size_t *out_answer_len
 ) {
-    PeerConnectionBufferSessionDescription_t remote_desc = {
-        .pSdpBuffer = offer_sdp,
-        .sdpBufferLength = offer_len,
-        .type = SDP_CONTROLLER_MESSAGE_TYPE_OFFER,
-    };
-    PeerConnectionBufferSessionDescription_t local_desc = {
-        .pSdpBuffer = local_desc_buffer,
-        .sdpBufferLength = local_desc_buffer_len,
-        .type = SDP_CONTROLLER_MESSAGE_TYPE_ANSWER,
-    };
+    PeerConnectionBufferSessionDescription_t *remote_desc = &s_answer_remote_desc_scratch;
+    PeerConnectionBufferSessionDescription_t *local_desc = &s_answer_local_desc_scratch;
     PeerConnectionResult_t pc_rc;
+
+    memset(remote_desc, 0, sizeof(*remote_desc));
+    remote_desc->pSdpBuffer = offer_sdp;
+    remote_desc->sdpBufferLength = offer_len;
+    remote_desc->type = SDP_CONTROLLER_MESSAGE_TYPE_OFFER;
+
+    memset(local_desc, 0, sizeof(*local_desc));
+    local_desc->pSdpBuffer = local_desc_buffer;
+    local_desc->sdpBufferLength = local_desc_buffer_len;
+    local_desc->type = SDP_CONTROLLER_MESSAGE_TYPE_ANSWER;
 
     *out_answer_len = answer_buffer_len;
 
-    pc_rc = PeerConnectionSdp_DeserializeSdpMessage(&remote_desc);
+    pc_rc = PeerConnectionSdp_DeserializeSdpMessage(remote_desc);
     if (PEER_CONNECTION_RESULT_OK != pc_rc) {
         printf("[webrtc] PeerConnectionSdp_DeserializeSdpMessage failed: %d\n", (int) pc_rc);
         return -1;
     }
 
-    pc_rc = PeerConnectionSdp_SetPayloadTypes(session, &remote_desc);
+    pc_rc = PeerConnectionSdp_SetPayloadTypes(session, remote_desc);
     if (PEER_CONNECTION_RESULT_OK != pc_rc) {
         printf("[webrtc] PeerConnectionSdp_SetPayloadTypes failed: %d\n", (int) pc_rc);
         return -1;
@@ -306,12 +341,12 @@ static int build_answer_from_offer(
     // fork-aivision: PopulateSessionDescription reads TWCC info back from the
     // session's cached remoteSessionDescription on the answer path, so keep the
     // parsed offer struct there for this S6b offer->answer round-trip.
-    session->remoteSessionDescription = remote_desc;
+    session->remoteSessionDescription = *remote_desc;
 
     pc_rc = PeerConnectionSdp_PopulateSessionDescription(
         session,
-        &remote_desc,
-        &local_desc,
+        remote_desc,
+        local_desc,
         answer_buffer,
         out_answer_len
     );
@@ -320,7 +355,7 @@ static int build_answer_from_offer(
         return -1;
     }
 
-    pc_rc = PeerConnection_SetLocalDescription(session, &local_desc);
+    pc_rc = PeerConnection_SetLocalDescription(session, local_desc);
     if (PEER_CONNECTION_RESULT_OK != pc_rc) {
         printf("[webrtc] PeerConnection_SetLocalDescription failed: %d\n", (int) pc_rc);
         return -1;
@@ -347,6 +382,9 @@ static int run_session(void) {
     bool peer_connection_inited = false;
     size_t offer_len = 0;
     int rc = -1;
+    PeerConnectionSessionConfiguration_t *pc_config = &s_pc_config_scratch;
+    Transceiver_t *video_transceiver = &s_video_transceiver_scratch;
+    PeerConnectionBufferSessionDescription_t *remote_desc = &s_set_remote_desc_scratch;
 
     if (0 != ensure_csprng_ready()) {
         return -1;
@@ -383,10 +421,9 @@ static int run_session(void) {
 
     s_active_signaling = sig;
 
-    PeerConnectionSessionConfiguration_t pc_config;
-    memset(&pc_config, 0, sizeof(pc_config));
-    pc_config.canTrickleIce = 1U;
-    pc_config.natTraversalConfigBitmap =
+    memset(pc_config, 0, sizeof(*pc_config));
+    pc_config->canTrickleIce = 1U;
+    pc_config->natTraversalConfigBitmap =
         ICE_CANDIDATE_NAT_TRAVERSAL_CONFIG_SEND_HOST |
         ICE_CANDIDATE_NAT_TRAVERSAL_CONFIG_ACCEPT_HOST |
         ICE_CANDIDATE_NAT_TRAVERSAL_CONFIG_ACCEPT_SRFLX;
@@ -396,24 +433,23 @@ static int run_session(void) {
     // case we want host + srflx as the direct-connect baseline; TURN remains
     // optional and only adds relay candidates when explicitly enabled.
     #if APP_WEBRTC_ENABLE_SRFLX
-    pc_config.natTraversalConfigBitmap |= ICE_CANDIDATE_NAT_TRAVERSAL_CONFIG_SEND_SRFLX;
+    pc_config->natTraversalConfigBitmap |= ICE_CANDIDATE_NAT_TRAVERSAL_CONFIG_SEND_SRFLX;
     #endif
 
     #if APP_WEBRTC_ENABLE_TURN
-    pc_config.natTraversalConfigBitmap |=
+    pc_config->natTraversalConfigBitmap |=
         ICE_CANDIDATE_NAT_TRAVERSAL_CONFIG_SEND_RELAY |
         ICE_CANDIDATE_NAT_TRAVERSAL_CONFIG_ACCEPT_RELAY;
     #endif
 
-    if (PEER_CONNECTION_RESULT_OK != PeerConnection_Init(session, &pc_config)) {
+    if (PEER_CONNECTION_RESULT_OK != PeerConnection_Init(session, pc_config)) {
         printf("[webrtc] PeerConnection_Init failed\n");
         goto cleanup;
     }
     peer_connection_inited = true;
 
-    Transceiver_t video_transceiver;
-    init_video_transceiver(&video_transceiver);
-    if (PEER_CONNECTION_RESULT_OK != PeerConnection_AddTransceiver(session, &video_transceiver)) {
+    init_video_transceiver(video_transceiver);
+    if (PEER_CONNECTION_RESULT_OK != PeerConnection_AddTransceiver(session, video_transceiver)) {
         printf("[webrtc] PeerConnection_AddTransceiver failed\n");
         goto cleanup;
     }
@@ -457,13 +493,12 @@ static int run_session(void) {
         goto cleanup;
     }
 
-    PeerConnectionBufferSessionDescription_t remote_desc;
-    memset(&remote_desc, 0, sizeof(remote_desc));
-    remote_desc.pSdpBuffer = offer_sdp;
-    remote_desc.sdpBufferLength = offer_len;
-    remote_desc.type = SDP_CONTROLLER_MESSAGE_TYPE_OFFER;
+    memset(remote_desc, 0, sizeof(*remote_desc));
+    remote_desc->pSdpBuffer = offer_sdp;
+    remote_desc->sdpBufferLength = offer_len;
+    remote_desc->type = SDP_CONTROLLER_MESSAGE_TYPE_OFFER;
 
-    if (PEER_CONNECTION_RESULT_OK != PeerConnection_SetRemoteDescription(session, &remote_desc)) {
+    if (PEER_CONNECTION_RESULT_OK != PeerConnection_SetRemoteDescription(session, remote_desc)) {
         printf("[webrtc] PeerConnection_SetRemoteDescription failed\n");
         goto cleanup;
     }
@@ -518,6 +553,8 @@ static void webrtc_task(void *arg) {
             s_creds_dirty = false;
             printf("[webrtc] creds_dirty observed at session boundary (no-op in S6b)\n");
         }
+        log_webrtc_size_info();
+        vTaskDelay(20); // to print
 
         int rc = run_session();
         if (!s_start_requested) {
