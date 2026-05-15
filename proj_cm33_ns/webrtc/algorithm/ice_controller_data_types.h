@@ -62,7 +62,13 @@ extern "C" {
 #define ICE_CONTROLLER_ICE_SERVER_PASSWORD_MAX_LENGTH ( 256 )
 
 #define ICE_CONTROLLER_MAX_CANDIDATE_PAIR_COUNT       ( 1024 )
-#define ICE_CONTROLLER_MAX_LOCAL_CANDIDATE_COUNT      ( 100 )
+/* fork-aivision: upstream uses 100 here as generic demo headroom. Our current
+ * port exposes one local interface, and the intended baseline is host + srflx.
+ * Optional TURN fallback adds one relay candidate, which is why demo_config.h
+ * drives this as 2 without TURN and 3 with TURN. Keep this tied to the top-
+ * level product knob so the large always-live arrays in IceControllerContext_t
+ * track the intended session shape instead of the upstream demo maximum. */
+#define ICE_CONTROLLER_MAX_LOCAL_CANDIDATE_COUNT      ( APP_WEBRTC_MAX_LOCAL_CANDIDATE_COUNT )
 #define ICE_CONTROLLER_MAX_REMOTE_CANDIDATE_COUNT     ( 100 )
 
 #define ICE_CONTROLLER_PRINT_CONNECTIVITY_CHECK_PERIOD_MS ( 10000 )

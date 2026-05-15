@@ -20,6 +20,7 @@
 
 #include "aws_creds.h"
 #include "csprng.h"
+#include "demo_config.h"
 #include "ice_data_types.h"
 #include "ice_controller.h"
 #include "peer_connection.h"
@@ -387,7 +388,22 @@ static int run_session(void) {
     pc_config.canTrickleIce = 1U;
     pc_config.natTraversalConfigBitmap =
         ICE_CANDIDATE_NAT_TRAVERSAL_CONFIG_SEND_HOST |
-        ICE_CANDIDATE_NAT_TRAVERSAL_CONFIG_ACCEPT_HOST;
+        ICE_CANDIDATE_NAT_TRAVERSAL_CONFIG_ACCEPT_HOST |
+        ICE_CANDIDATE_NAT_TRAVERSAL_CONFIG_ACCEPT_SRFLX;
+
+    // fork-aivision: Keep the current integration stub aligned with the
+    // product-level candidate budget in demo_config.h. For the intended use
+    // case we want host + srflx as the direct-connect baseline; TURN remains
+    // optional and only adds relay candidates when explicitly enabled.
+    #if APP_WEBRTC_ENABLE_SRFLX
+    pc_config.natTraversalConfigBitmap |= ICE_CANDIDATE_NAT_TRAVERSAL_CONFIG_SEND_SRFLX;
+    #endif
+
+    #if APP_WEBRTC_ENABLE_TURN
+    pc_config.natTraversalConfigBitmap |=
+        ICE_CANDIDATE_NAT_TRAVERSAL_CONFIG_SEND_RELAY |
+        ICE_CANDIDATE_NAT_TRAVERSAL_CONFIG_ACCEPT_RELAY;
+    #endif
 
     if (PEER_CONNECTION_RESULT_OK != PeerConnection_Init(session, &pc_config)) {
         printf("[webrtc] PeerConnection_Init failed\n");

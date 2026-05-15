@@ -40,6 +40,27 @@ static UserInputYnStatus user_input_status = APP_INPUT_NONE;
 static bool is_demo_mode = false;
 static int reporting_interval = 2000;
 
+
+#define TEST_BLOCK_SIZE  10 * 1024
+#define TEST_BLOCK_COUNT 30
+void memory_test() {
+    void *blocks[TEST_BLOCK_COUNT];
+    int i = 0;
+    for (; i < TEST_BLOCK_COUNT; i++) {
+        void *ptr = malloc(TEST_BLOCK_SIZE);
+        // printf("0x%x\r\n", (unsigned int) ptr);
+        blocks[i] = ptr;
+        if (!ptr) {
+            break;
+        }
+    }
+    printf("====Allocated %d blocks of size %d (of max %d)===\r\n", i, TEST_BLOCK_SIZE, TEST_BLOCK_COUNT);
+    for (int j = 0; j < i; j++) {
+        free(blocks[j]);
+    }
+}
+
+
 /////////////////////////////////////////////////////////////////////////////
 
 static void on_connection_status(IotConnectConnectionStatus status) {
@@ -319,6 +340,9 @@ void app_task(void *pvParameters) {
     // Smoke-test the AWS creds mTLS flow before connecting MQTT.
     int creds_status = iotconnect_sdk_obtain_aws_creds();
 
+
+    memory_test();
+
     if (0 != creds_status) {
         printf("AWS creds obtain failed (status=%d).\n", creds_status);
     } else {
@@ -334,6 +358,10 @@ void app_task(void *pvParameters) {
         app_webrtc_start();
     }
 
+    while (true) {
+        printf("Waiting for stack to blow ....\n");
+        vTaskDelay(1000); 
+    }
     
     // NOTE: Temp hack only send 2 mesages to avoid spam but have IoTConnect detect us
     for (int i = 0; i < 1; i++) {

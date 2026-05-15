@@ -33,6 +33,26 @@
 #define ENABLE_TWCC_SUPPORT   1U
 #define AWS_MAX_VIEWER_NUM    ( 2 )
 
+// fork-aivision: Size the local ICE candidate budget to the product use case,
+// not to the upstream demo's generic headroom. Our current port exposes one
+// local interface, so the direct-connect baseline is one host candidate plus
+// one server-reflexive candidate learned via STUN. Optional TURN fallback adds
+// one relay candidate. Keep this small on purpose because it directly sizes
+// large always-live arrays inside IceControllerContext_t.
+//
+// Revisit this if product scope changes to any of the following:
+// - multiple local interfaces
+// - multiple simultaneously used STUN/TURN paths per session
+// - TURN becoming a baseline requirement instead of an optional fallback
+#define APP_WEBRTC_ENABLE_SRFLX 1U
+#define APP_WEBRTC_ENABLE_TURN  0U
+
+#if APP_WEBRTC_ENABLE_TURN
+#define APP_WEBRTC_MAX_LOCAL_CANDIDATE_COUNT 3U
+#else
+#define APP_WEBRTC_MAX_LOCAL_CANDIDATE_COUNT 2U
+#endif
+
 /* Codec / audio selection.
  *
  * Audio is out of scope for this project (no microphone on the board). These
