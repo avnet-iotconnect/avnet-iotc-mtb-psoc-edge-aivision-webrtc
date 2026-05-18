@@ -357,11 +357,6 @@ void app_task(void *pvParameters) {
         // _start runs the REST steps synchronously here, then flips the task.
         app_webrtc_start();
     }
-
-    while (true) {
-        printf("Waiting for stack to blow ....\n");
-        vTaskDelay(1000); 
-    }
     
     // NOTE: Temp hack only send 2 mesages to avoid spam but have IoTConnect detect us
     for (int i = 0; i < 1; i++) {
