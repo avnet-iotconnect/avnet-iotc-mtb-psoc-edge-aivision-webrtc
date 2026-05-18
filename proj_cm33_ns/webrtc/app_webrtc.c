@@ -119,7 +119,6 @@ static int populate_creds(AwsCreds *out, char *region_buf, size_t region_buf_siz
     return 0;
 }
 
-
 static int ensure_csprng_ready(void) {
     if (s_csprng_ready) {
         return 0;
@@ -133,7 +132,6 @@ static int ensure_csprng_ready(void) {
     s_csprng_ready = true;
     return 0;
 }
-
 
 static void init_video_transceiver(Transceiver_t *out_transceiver) {
     memset(out_transceiver, 0, sizeof(*out_transceiver));
@@ -159,7 +157,6 @@ static void init_video_transceiver(Transceiver_t *out_transceiver) {
     out_transceiver->trackIdLength = sizeof(APP_WEBRTC_TRANSCEIVER_VIDEO_TRACK_ID) - 1U;
 }
 
-
 static const char *local_candidate_type_string(IceCandidateType_t candidate_type) {
     switch (candidate_type) {
         case ICE_CANDIDATE_TYPE_HOST:
@@ -174,7 +171,6 @@ static const char *local_candidate_type_string(IceCandidateType_t candidate_type
             return "unknown";
     }
 }
-
 
 static int format_local_candidate_ip(const IceCandidate_t *candidate, char *ip_buf, size_t ip_buf_len) {
     if (NULL == candidate || NULL == ip_buf || ip_buf_len < 16U) {
@@ -195,7 +191,6 @@ static int format_local_candidate_ip(const IceCandidate_t *candidate, char *ip_b
 
     return 0;
 }
-
 
 static int serialize_local_candidate(
     const PeerConnectionIceLocalCandidate_t *local_candidate,
@@ -241,7 +236,6 @@ static int serialize_local_candidate(
     return 0;
 }
 
-
 static void on_local_candidate_ready(void *context, PeerConnectionIceLocalCandidate_t *local_candidate) {
     AppWebrtcSignalingBridge_t *bridge = (AppWebrtcSignalingBridge_t *) context;
     char candidate_buf[APP_WEBRTC_LOCAL_CANDIDATE_BUF_LEN];
@@ -265,7 +259,6 @@ static void on_local_candidate_ready(void *context, PeerConnectionIceLocalCandid
         printf("[webrtc] signaling_send_ice_candidate failed\n");
     }
 }
-
 
 static int build_answer_from_offer(
     PeerConnectionSession_t *session,
@@ -328,7 +321,6 @@ static int build_answer_from_offer(
 
     return 0;
 }
-
 
 static int run_session(void) {
     char region_buf[APP_WEBRTC_AWS_REGION_MAXLEN + 1U];
@@ -504,7 +496,6 @@ cleanup:
     return rc;
 }
 
-
 static void webrtc_task(void *arg) {
     (void) arg;
 
@@ -529,7 +520,6 @@ static void webrtc_task(void *arg) {
     }
 }
 
-
 void app_webrtc_init(void) {
     if (NULL != s_webrtc_task) {
         return;
@@ -548,7 +538,6 @@ void app_webrtc_init(void) {
         s_webrtc_task = NULL;
     }
 }
-
 
 bool app_webrtc_start(void) {
     char region_buf[APP_WEBRTC_AWS_REGION_MAXLEN + 1U];
@@ -588,7 +577,6 @@ void app_webrtc_stop(void) {
     vTaskDelay(pdMS_TO_TICKS(APP_WEBRTC_POLL_IDLE_MS * 2U));
     printf("[webrtc] stopped\n");
 }
-
 
 void app_webrtc_notify_creds_updated(void) {
     s_creds_dirty = true;
