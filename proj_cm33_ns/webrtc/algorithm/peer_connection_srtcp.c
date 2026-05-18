@@ -413,7 +413,13 @@ static PeerConnectionResult_t OnRtcpNackEvent( PeerConnectionSession_t * pSessio
                                                                &twccBandwidthInfo );
             }
 
-            LogDebug( ( "TWCC Bandwidth Info : SentBytes - %llu, ReceivedBytes - %llu, SentPackets - %llu, ReceivedPackets - %llu, Duration - %lld", twccBandwidthInfo.sentBytes, twccBandwidthInfo.receivedBytes, twccBandwidthInfo.sentPackets, twccBandwidthInfo.receivedPackets, twccBandwidthInfo.duration ) );
+            /* fork-aivision: newlib-nano lacks %llu/%lld; logs truncated to low 32 bits. */
+            LogDebug( ( "TWCC Bandwidth Info (low32) : SentBytes - %lu, ReceivedBytes - %lu, SentPackets - %lu, ReceivedPackets - %lu, Duration - %ld",
+                        ( unsigned long ) twccBandwidthInfo.sentBytes,
+                        ( unsigned long ) twccBandwidthInfo.receivedBytes,
+                        ( unsigned long ) twccBandwidthInfo.sentPackets,
+                        ( unsigned long ) twccBandwidthInfo.receivedPackets,
+                        ( long ) twccBandwidthInfo.duration ) );
         }
 
         return ret;
@@ -640,9 +646,9 @@ static PeerConnectionResult_t OnRtcpSenderReportEvent( PeerConnectionSession_t *
         ret = PeerConnectionSrtcp_MatchRemoteBySsrc( pSession,
                                                      senderReport.senderSsrc );
 
-        LogVerbose( ( "RTCP_PACKET_SENDER_REPORT, SSRC: %lu, NTP Time %llu RTP Time: %lu, PacketCount: %lu, OctetCount: %lu",
+        LogVerbose( ( "RTCP_PACKET_SENDER_REPORT, SSRC: %lu, NTP Time (low32) %lu RTP Time: %lu, PacketCount: %lu, OctetCount: %lu",
                       senderReport.senderSsrc,
-                      senderReport.senderInfo.ntpTime,
+                      ( unsigned long ) senderReport.senderInfo.ntpTime,
                       senderReport.senderInfo.rtpTime,
                       senderReport.senderInfo.packetCount,
                       senderReport.senderInfo.octetCount ) );

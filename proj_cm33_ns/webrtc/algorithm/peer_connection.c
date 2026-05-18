@@ -2538,8 +2538,8 @@ static PeerConnectionResult_t PeerConnection_OnRtcpSenderReportCallback( PeerCon
             }
             else
             {
-                LogDebug( ( "Send RTCP Sender Report with Status : %u  to SSRC :  %lu, NTP Time :  %llu, RTP Time:  %lu,  PacketCount : %lu, OctetCount : %lu",ret,
-                            rtcpSenderReport.senderSsrc, rtcpSenderReport.senderInfo.ntpTime, rtcpSenderReport.senderInfo.rtpTime, rtcpSenderReport.senderInfo.packetCount, rtcpSenderReport.senderInfo.octetCount ) );
+                LogDebug( ( "Send RTCP Sender Report with Status : %u  to SSRC :  %lu, NTP Time (low32) :  %lu, RTP Time:  %lu,  PacketCount : %lu, OctetCount : %lu",ret,
+                            rtcpSenderReport.senderSsrc, ( unsigned long ) rtcpSenderReport.senderInfo.ntpTime, rtcpSenderReport.senderInfo.rtpTime, rtcpSenderReport.senderInfo.packetCount, rtcpSenderReport.senderInfo.octetCount ) );
             }
         }
 
