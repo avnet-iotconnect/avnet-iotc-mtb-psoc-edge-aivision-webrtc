@@ -40,7 +40,7 @@
 #define APP_WEBRTC_TRANSCEIVER_H264_BITRATE_BPS (1400U * 1024U)
 
 #define WEBRTC_TASK_NAME "webrtc"
-#define WEBRTC_TASK_STACK_W (8U * 1024U)
+#define WEBRTC_TASK_STACK_W (24U * 1024U)
 #define WEBRTC_TASK_PRIO (tskIDLE_PRIORITY + 2)
 
 #define APP_WEBRTC_POLL_IDLE_MS 20U
@@ -518,8 +518,6 @@ static void webrtc_task(void *arg) {
             s_creds_dirty = false;
             printf("[webrtc] creds_dirty observed at session boundary (no-op in S6b)\n");
         }
-        log_webrtc_size_info();
-        vTaskDelay(20); // to print
 
         int rc = run_session();
         if (!s_start_requested) {
