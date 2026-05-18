@@ -63,31 +63,6 @@ typedef struct AppWebrtcSignalingBridge {
 } AppWebrtcSignalingBridge_t;
 
 
-static void log_webrtc_size_info(void) {
-    const size_t task_stack_bytes = WEBRTC_TASK_STACK_W * sizeof(StackType_t);
-    const size_t scratch_bytes =
-        sizeof(s_pc_config_scratch)
-        + sizeof(s_video_transceiver_scratch)
-        + sizeof(s_answer_remote_desc_scratch)
-        + sizeof(s_answer_local_desc_scratch)
-        + sizeof(s_set_remote_desc_scratch);
-
-    printf("[webrtc] task stack cfg: %u B (~%u KiB)\n",
-           (unsigned int) task_stack_bytes,
-           (unsigned int) task_stack_bytes / 1024U);
-    printf("[webrtc] sizeof(pc_config)=%u B (~%u KiB), sizeof(transceiver)=%u B (~%u KiB)\n",
-           (unsigned int) sizeof(s_pc_config_scratch),
-           (unsigned int) sizeof(s_pc_config_scratch) / 1024U,
-           (unsigned int) sizeof(s_video_transceiver_scratch),
-           (unsigned int) sizeof(s_video_transceiver_scratch) / 1024U);
-    printf("[webrtc] sizeof(session_desc)=%u B (~%u KiB), scratch total=%u B (~%u KiB)\n",
-           (unsigned int) sizeof(s_answer_remote_desc_scratch),
-           (unsigned int) sizeof(s_answer_remote_desc_scratch) / 1024U,
-           (unsigned int) scratch_bytes,
-           (unsigned int) scratch_bytes / 1024U);
-}
-
-
 // Pull the cached IoTC-discovered AWS triplet and channel ARN into our local
 // view. The strings stay owned by the SDK cache.
 static int populate_creds(AwsCreds *out, char *region_buf, size_t region_buf_size) {
