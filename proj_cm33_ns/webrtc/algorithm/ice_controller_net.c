@@ -36,14 +36,7 @@
 extern void vPetWatchdog( void );
 static inline void icn_raw_putc( char c )
 {
-    for( uint32_t i = 0; i < 600000UL; i++ )
-    {
-        if( *(volatile uint32_t *)0x56000C1CUL & ( 1UL << 7 ) )
-        {
-            *(volatile uint32_t *)0x56000C28UL = ( uint32_t ) c;
-            return;
-        }
-    }
+    printf("%c", c);
     vPetWatchdog();
 }
 static void icn_raw_puts( const char *s ) { while( *s ) icn_raw_putc( *s++ ); }
