@@ -446,14 +446,14 @@ static IceControllerResult_t SendSocketPacket( IceControllerSocketContext_t * pS
              * indefinitely when its TX buffer fills. Pet watchdog either side
              * so IWDG does not reset before we capture the log. */
             vPetWatchdog();
-            icn_raw_putc( 'S' );
+            // icn_raw_putc( 'S' );
             sentBytes = sendto( pSocketContext->socketFd,
                                 pBuffer + sendTotalBytes,
                                 length - sendTotalBytes,
                                 flags,
                                 pDestinationAddress,
                                 addressLength );
-            icn_raw_putc( 's' );
+            // icn_raw_putc( 's' );
             vPetWatchdog();
         }
         else if( pSocketContext->socketType == ICE_CONTROLLER_SOCKET_TYPE_TLS )
@@ -462,11 +462,11 @@ static IceControllerResult_t SendSocketPacket( IceControllerSocketContext_t * pS
              * distinguish turns: (TCP/TLS relay) from turn: (plain UDP relay)
              * when diagnosing sender wedges. */
             vPetWatchdog();
-            icn_raw_putc( 'W' );
+            // icn_raw_putc( 'W' );
             sentBytes = TLS_FreeRTOS_send( &pSocketContext->tlsSession.xTlsNetworkContext,
                                            pBuffer + sendTotalBytes,
                                            length - sendTotalBytes );
-            icn_raw_putc( 'w' );
+            // icn_raw_putc( 'w' );
             vPetWatchdog();
         }
         else
