@@ -260,7 +260,7 @@ int signaling_resolve_endpoint(const AwsCreds *creds, char *out_endpoint, size_t
 
     int rc = 0;
     char *canon_hdr_buf = NULL;
-    IotConnectHttpResponse response = { .data = NULL };
+    IotConnectHttpResponse response = { 0 };
 
     // 3. Format current UTC time as ISO 8601.
     char date_iso[SIG_DATE_ISO_LEN];
@@ -1325,9 +1325,9 @@ void signaling_disconnect(SignalingHandle sig) {
 //
 // No wall-clock budget — we're MASTER and may idle indefinitely waiting for
 // a viewer (browser) to publish. The recv callback's per-call socket timeout
-// (WSS_SOCK_RECV_TIMEOUT_MS) keeps the loop cooperative; shutdown from
-// app_webrtc_stop() cuts the socket, which the recv callback observes as < 0
-// and propagates as transport_error.
+// (WSS_SOCK_RECV_TIMEOUT_MS) keeps the loop cooperative. Caller's stop
+// signal is not observed here; the loop exits when the websocket closes
+// (network event or peer hangup → transport_error) or when an offer arrives.
 int signaling_wait_for_offer(SignalingHandle sig, char *out_sdp, size_t out_sdp_cap, size_t *out_sdp_len) {
     if (NULL == sig || NULL == out_sdp || out_sdp_cap < 2 || NULL == out_sdp_len
         || !sig->connected || NULL == sig->ws_ctx) {

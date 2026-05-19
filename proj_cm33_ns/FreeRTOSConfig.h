@@ -188,6 +188,8 @@ standard names - or at least those used in the unmodified vector table. */
 
 #define configHEAP_ALLOCATION_SCHEME            (HEAP_ALLOCATION_TYPE3)
 
+#define configSTACK_DEPTH_TYPE                  uint32_t
+
 /* Check if the ModusToolbox Device Configurator Power personality parameter
  * "System Idle Power Mode" is set to either "CPU Sleep" or "System Deep Sleep".
  */

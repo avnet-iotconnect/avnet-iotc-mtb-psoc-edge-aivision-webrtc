@@ -25,17 +25,18 @@
 // Idempotent.
 void app_webrtc_init(void);
 
-// Bring the device onto the signaling channel as master and keep it there.
-// Does NOT imply media is flowing — that is viewer-initiated. Caller must
-// have ensured iotconnect_sdk_obtain_aws_creds() succeeded and
+// Enable broadcasting. The task brings the device onto the signaling channel
+// as master and keeps it there; media flows once a viewer offers and the
+// ICE/DTLS handshake completes. Caller must have ensured
+// iotconnect_sdk_obtain_aws_creds() succeeded and
 // iotcl_mqtt_get_config()->aws.webrtc_channel_arn is non-NULL. Non-blocking:
 // flips a flag and returns; the task picks up work on its next tick.
-// Returns true if start was accepted (or the task is already running).
+// Returns true if accepted (or already broadcasting).
 bool app_webrtc_start(void);
 
-// Drop any active viewer-initiated viewing event, leave the signaling
-// channel, and return the task to idle. Synchronous with a 5 s timeout
-// (logs and returns anyway on timeout). Idempotent.
+// Disable broadcasting. The media pump loop observes the flag and exits;
+// session cleanup proceeds normally afterward. No mid-setup or
+// mid-negotiation interruption — honored on next loop tick. Idempotent.
 void app_webrtc_stop(void);
 
 // Plug point for cred refresh: caller invokes this after successfully

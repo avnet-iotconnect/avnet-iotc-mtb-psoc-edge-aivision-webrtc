@@ -319,7 +319,7 @@ void app_task(void *pvParameters) {
     printf("CPID: %s\n", config.cpid);
     printf("ENV: %s\n", config.env);
     printf("WiFi SSID: %s\n", app_eeprom_data_get_wifi_ssid(WIFI_SSID));
-    printf("llu print test: %llu\n", (unsigned long long) Cy_SysLib_GetUniqueId());
+    memory_test();
     /* fork-aivision: temporary harness for SDP uint64 helpers (newlib-nano
      * lacks %llu/%lld). Remove together with helpers if/when libc gains it. */
     extern void app_llu_helpers_selftest(void);
