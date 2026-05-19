@@ -108,6 +108,11 @@ SEARCH+=../shared/retarget_io/
 # Select softfp or hardfp floating point. Default is softfp.
 VFP_SELECT+=
 
+
+# Very little downside in enabling this. Crashes can happen and visibility will be there.
+DEFINES+=CY_ARM_FAULT_DEBUG=CY_ARM_FAULT_DEBUG_ENABLED
+
+
 # Additional / custom C compiler flags.
 #
 # NOTE: Includes and defines should use the INCLUDES and DEFINES variable
