@@ -897,6 +897,9 @@ static int wslay_genmask_cb(wslay_event_context_ptr ctx, uint8_t *buf, size_t le
 // envelope is an SDP_OFFER and we don't already have one, decode it into the
 // caller's buffer and flip offer_ready. Anything else is logged and dropped.
 static void dispatch_text_frame(SignalingHandle sig, const uint8_t *msg, size_t msg_len) {
+    if (0 == msg_len) {
+        return;
+    }
     WssRecvMessage_t recv = { 0 };
     SignalingResult_t sig_rc = Signaling_ParseWssRecvMessage((const char *) msg, msg_len, &recv);
     if (SIGNALING_RESULT_OK != sig_rc) {
