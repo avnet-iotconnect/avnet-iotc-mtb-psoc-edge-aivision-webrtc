@@ -32,41 +32,8 @@
 #define ICE_CONTROLLER_SOCKET_LISTENER_SELECT_BLOCK_TIME_MS ( 50 )
 #define RX_BUFFER_SIZE ( 4096 )
 
-/* ── Raw-UART diagnostic helpers ────────────────────────────────────────── */
-/* Used to surface TURN-unwrap failures that LogWarn/LogDebug can't because
- * the project's logging.h in this path is the AWS-KVS printf stub, not the
- * vLoggingPrintf-backed one.  Matches the pattern in ice_controller.c and
- * media_enc.c — spins on TXE bit 7 at USART1 ISR (0x56000C1C), writes TDR
- * at 0x56000C28, pets the watchdog on timeout.                             */
 extern void vPetWatchdog( void );
-static inline void isl_raw_putc( char c )
-{
-    for( uint32_t i = 0; i < 600000UL; i++ )
-    {
-        if( *(volatile uint32_t *)0x56000C1CUL & ( 1UL << 7 ) )
-        {
-            *(volatile uint32_t *)0x56000C28UL = ( uint32_t ) c;
-            return;
-        }
-    }
-    vPetWatchdog();
-}
-static void isl_raw_puts( const char *s ) { while( *s ) isl_raw_putc( *s++ ); }
-static void isl_raw_dec( int v )
-{
-    char buf[ 12 ];
-    int  n = 0;
-    if( v < 0 ) { isl_raw_putc( '-' ); v = -v; }
-    if( v == 0 ) { isl_raw_putc( '0' ); return; }
-    while( v > 0 ) { buf[ n++ ] = '0' + ( v % 10 ); v /= 10; }
-    while( n-- ) isl_raw_putc( buf[ n ] );
-}
-static void isl_raw_hex2( unsigned int v )
-{
-    static const char hex[] = "0123456789abcdef";
-    isl_raw_putc( hex[ ( v >> 4 ) & 0xF ] );
-    isl_raw_putc( hex[ v & 0xF ] );
-}
+
 
 static int32_t RecvPacketUdp( IceControllerSocketContext_t * pSocketContext,
                               uint8_t * pBuffer,
@@ -88,30 +55,32 @@ static int32_t RecvPacketUdp( IceControllerSocketContext_t * pSocketContext,
                     ( struct sockaddr * ) &srcAddress,
                     &srcAddressLength );
 
-    /* UDP RX visibility for the W6x UDP-TURN diagnosis.  The ALLOCATING
-     * timeout is ambiguous: either our Allocate request never left (TX broken)
-     * or the server's response never came back (RX broken).  Emit:
-     *   [isl] udpRx b=<N>  when any bytes actually arrive (includes port)
-     *   [isl] udpErr e=<errno>  for errors other than EAGAIN/EWOULDBLOCK.
-     * EAGAIN is omitted — it fires every select tick when the socket is idle. */
+    /* UDP RX visibility — must use LogInfo (printf-backed) rather than the
+     * USART1 TDR raw path that previously lived here: that UART is the
+     * secure-world stream and not visible alongside the rest of the device
+     * log, which made earlier ICE diagnosis impossible. EAGAIN/EWOULDBLOCK
+     * are skipped because they fire every idle select tick. */
     if( ret > 0 )
     {
         uint16_t rxPort = 0;
+        uint32_t rxIp = 0;
         if( srcAddress.ss_family == AF_INET )
         {
-            rxPort = ntohs( ( ( struct sockaddr_in * ) &srcAddress )->sin_port );
+            struct sockaddr_in *p4 = ( struct sockaddr_in * ) &srcAddress;
+            rxPort = ntohs( p4->sin_port );
+            rxIp = ntohl( p4->sin_addr.s_addr );
         }
-        isl_raw_puts( "[isl] udpRx b=" );
-        isl_raw_dec( ( int ) ret );
-        isl_raw_puts( " p=" );
-        isl_raw_dec( ( int ) rxPort );
-        isl_raw_puts( "\r\n" );
+        LogInfo( ( "<-UDP %u bytes from %u.%u.%u.%u:%u",
+                   ( unsigned ) ret,
+                   ( rxIp >> 24 ) & 0xFFu,
+                   ( rxIp >> 16 ) & 0xFFu,
+                   ( rxIp >> 8 ) & 0xFFu,
+                   rxIp & 0xFFu,
+                   ( unsigned ) rxPort ) );
     }
     else if( ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK )
     {
-        isl_raw_puts( "[isl] udpErr e=" );
-        isl_raw_dec( errno );
-        isl_raw_puts( "\r\n" );
+        LogInfo( ( "UDP recv errno=%d", errno ) );
     }
 
     if( ret < 0 )
@@ -459,25 +428,8 @@ static IceControllerResult_t ProcessOneFrame( IceControllerContext_t * pCtx,
                  * failure cases (INVALID, UNEXPECTED, PAIR_NOT_FOUND) it
                  * is.  Only fires for channel-data-shaped bytes to keep
                  * the UART quiet during normal STUN traffic.               */
-                if( ( processingBufferLength >= 4 ) &&
-                    ( ( pProcessingBuffer[ 0 ] & 0xF0 ) == 0x40 ) )
-                {
-                    isl_raw_puts( "[isl] turnUnwrap FAIL r=" );
-                    isl_raw_dec( ( int ) iceResult );
-                    isl_raw_puts( " b=" );
-                    isl_raw_hex2( pProcessingBuffer[ 0 ] );
-                    isl_raw_hex2( pProcessingBuffer[ 1 ] );
-                    isl_raw_hex2( pProcessingBuffer[ 2 ] );
-                    isl_raw_hex2( pProcessingBuffer[ 3 ] );
-                    isl_raw_puts( " len=" );
-                    isl_raw_dec( ( int ) processingBufferLength );
-                    isl_raw_puts( " cand=" );
-                    isl_raw_hex2( ( pSocketContext->pLocalCandidate->candidateId >> 8 ) & 0xFF );
-                    isl_raw_hex2( pSocketContext->pLocalCandidate->candidateId & 0xFF );
-                    isl_raw_puts( " st=" );
-                    isl_raw_dec( ( int ) pSocketContext->pLocalCandidate->state );
-                    isl_raw_puts( "\r\n" );
-                }
+                /* TURN ChannelData unwrap-failure diagnostic removed —
+                 * TURN is permanently out of scope. */
             }
         }
         else
@@ -561,26 +513,6 @@ static IceControllerResult_t ProcessOneFrame( IceControllerContext_t * pCtx,
             LogWarn( ( "drop unknown packet, length=%u, first byte=0x%02x",
                        ( unsigned ) processingBufferLength,
                        pProcessingBuffer[ 0 ] ) );
-
-            /* Raw-UART diagnostic mirror: LogWarn can be dropped by UART
-             * backpressure.  Emit a compact line so we always know when
-             * the demux threw a packet away, including the local cand
-             * type + state so we can tell whether this was on the relay
-             * (post-unwrap failure) or on a different socket entirely. */
-            if( ( processingBufferLength >= 2 ) &&
-                ( ( pProcessingBuffer[ 0 ] & 0xF0 ) == 0x40 ) )
-            {
-                isl_raw_puts( "[isl] drop b=" );
-                isl_raw_hex2( pProcessingBuffer[ 0 ] );
-                isl_raw_hex2( pProcessingBuffer[ 1 ] );
-                isl_raw_puts( " len=" );
-                isl_raw_dec( ( int ) processingBufferLength );
-                isl_raw_puts( " candType=" );
-                isl_raw_dec( ( int ) pSocketContext->pLocalCandidate->candidateType );
-                isl_raw_puts( " st=" );
-                isl_raw_dec( ( int ) pSocketContext->pLocalCandidate->state );
-                isl_raw_puts( "\r\n" );
-            }
         }
     }
 

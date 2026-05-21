@@ -35,23 +35,6 @@
 #include "peer_connection_h265_helper.h"
 #include "peer_connection_opus_helper.h"
 
-/* ── Raw UART debug (bypasses FreeRTOS logging) ────────────────────────── */
-/* Bounded spin — see rationale in kvs_webrtc_task.c. */
-extern void vPetWatchdog( void );
-static inline void srtp_raw_putc( char c )
-{
-    for( uint32_t i = 0; i < 600000UL; i++ )
-    {
-        if( *(volatile uint32_t *)0x56000C1CUL & ( 1UL << 7 ) )
-        {
-            *(volatile uint32_t *)0x56000C28UL = ( uint32_t ) c;
-            return;
-        }
-    }
-    vPetWatchdog();
-}
-static void srtp_raw_puts( const char *s ) { while( *s ) srtp_raw_putc( *s++ ); }
-
 /*-----------------------------------------------------------*/
 
 static PeerConnectionResult_t OnJitterBufferFrameReady( void * pCustomContext,
@@ -182,7 +165,6 @@ PeerConnectionResult_t PeerConnectionSrtp_ConstructSrtpPacket( PeerConnectionSes
         }
         else
         {
-            srtp_raw_puts( "[srtp] Mtx<TIMEOUT\r\n" );
             LogError( ( "srtpSessionMutex (encrypt) timeout (500 ms) — prior packet wedged" ) );
             ret = PEER_CONNECTION_RESULT_FAIL_TAKE_SRTP_MUTEX;
         }

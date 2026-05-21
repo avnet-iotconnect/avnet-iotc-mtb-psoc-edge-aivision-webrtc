@@ -296,6 +296,12 @@ static int run_session(void) {
     char wss_endpoint[APP_WEBRTC_WSS_ENDPOINT_LEN];
     AwsCreds aws_creds;
     PeerConnectionSession_t session = {0};
+    // Transceiver must outlive the PeerConnection it's added to:
+    // PeerConnection_AddTransceiver (peer_connection.c AllocateTransceiver
+    // ~line 1388) stores the raw pointer in pSession->pTransceivers[], not
+    // a copy. SetPayloadType later dereferences ->codecBitMap and
+    // ->trackKind, so the storage has to be live for the whole session.
+    Transceiver_t video_transceiver;
     SignalingHandle sig = NULL;
     AppWebrtcSignalingBridge_t signaling_bridge = {
         .sig = NULL,
@@ -348,7 +354,6 @@ static int run_session(void) {
         }
         peer_connection_inited = true;
 
-        Transceiver_t video_transceiver;
         init_video_transceiver(&video_transceiver);
         if (PEER_CONNECTION_RESULT_OK != PeerConnection_AddTransceiver(&session, &video_transceiver)) {
             printf("[webrtc] PeerConnection_AddTransceiver failed\n");

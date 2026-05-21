@@ -33,22 +33,7 @@
 #endif
 #include "networking_utils.h"
 
-/* ── Raw UART debug (bypasses FreeRTOS logging) ────────────────────────── */
-/* Bounded spin — see rationale in kvs_webrtc_task.c. */
 extern void vPetWatchdog( void );
-static inline void ic_raw_putc( char c )
-{
-    for( uint32_t i = 0; i < 600000UL; i++ )
-    {
-        if( *(volatile uint32_t *)0x56000C1CUL & ( 1UL << 7 ) )
-        {
-            *(volatile uint32_t *)0x56000C28UL = ( uint32_t ) c;
-            return;
-        }
-    }
-    vPetWatchdog();
-}
-static void ic_raw_puts( const char *s ) { while( *s ) ic_raw_putc( *s++ ); }
 
 #define ICE_CONTROLLER_MESSAGE_QUEUE_NAME "/WebrtcApplicationIceController"
 #define ICE_CONTROLLER_TIMER_NAME "IceControllerTimer"
@@ -453,10 +438,8 @@ static IceControllerResult_t HandleCandidatePairRequest( IceControllerContext_t 
     uint8_t stunBuffer[ ICE_CONTROLLER_STUN_MESSAGE_BUFFER_SIZE + ICE_TURN_CHANNEL_DATA_MESSAGE_HEADER_LENGTH ];
     size_t stunBufferLength = ICE_CONTROLLER_STUN_MESSAGE_BUFFER_SIZE;
     IceControllerSocketContext_t * pSocketContext = pTargetSocketContext;
-    #if LIBRARY_LOG_LEVEL >= LOG_VERBOSE
     char ipFromBuffer[ INET_ADDRSTRLEN ];
     char ipToBuffer[ INET_ADDRSTRLEN ];
-    #endif /* #if LIBRARY_LOG_LEVEL >= LOG_VERBOSE  */
     IceEndpoint_t * pDestEndpoint = NULL;
     uint64_t currentTimeSeconds = NetworkingUtils_GetCurrentTimeSec( NULL );
 
@@ -536,19 +519,18 @@ static IceControllerResult_t HandleCandidatePairRequest( IceControllerContext_t 
         {
             pDestEndpoint = &pTargetCandidatePair->pRemoteCandidate->endpoint;
         }
-        LogVerbose( ( "Sending candidate pair request from IP/port: %s/%d to %s/%d",
-                      IceControllerNet_LogIpAddressInfo( &pTargetCandidatePair->pLocalCandidate->endpoint,
-                                                         ipFromBuffer,
-                                                         sizeof( ipFromBuffer ) ),
-                      pTargetCandidatePair->pLocalCandidate->endpoint.transportAddress.port,
-                      IceControllerNet_LogIpAddressInfo( pDestEndpoint,
-                                                         ipToBuffer,
-                                                         sizeof( ipToBuffer ) ),
-                      pDestEndpoint->transportAddress.port ) );
-        LogDebug( ( "Sending STUN packet to candidate pair, pair state: %d, local/remote candidate ID: 0x%04x / 0x%04x",
-                    pTargetCandidatePair->state,
-                    pTargetCandidatePair->pLocalCandidate->candidateId,
-                    pTargetCandidatePair->pRemoteCandidate->candidateId ) );
+        LogInfo( ( "STUN-> pair 0x%04x/0x%04x state=%d %s/%d -> %s/%d",
+                   pTargetCandidatePair->pLocalCandidate->candidateId,
+                   pTargetCandidatePair->pRemoteCandidate->candidateId,
+                   pTargetCandidatePair->state,
+                   IceControllerNet_LogIpAddressInfo( &pTargetCandidatePair->pLocalCandidate->endpoint,
+                                                      ipFromBuffer,
+                                                      sizeof( ipFromBuffer ) ),
+                   pTargetCandidatePair->pLocalCandidate->endpoint.transportAddress.port,
+                   IceControllerNet_LogIpAddressInfo( pDestEndpoint,
+                                                      ipToBuffer,
+                                                      sizeof( ipToBuffer ) ),
+                   pDestEndpoint->transportAddress.port ) );
 
         IceControllerNet_LogStunPacket( stunBuffer,
                                         stunBufferLength );
@@ -938,13 +920,13 @@ IceControllerResult_t IceController_AddRemoteCandidate( IceControllerContext_t *
             }
             else
             {
-                LogVerbose( ( "Received remote candidate with IP/port: %s/%d",
-                              IceControllerNet_LogIpAddressInfo( pRemoteCandidate->pEndpoint,
-                                                                 ipBuffer,
-                                                                 sizeof( ipBuffer ) ),
-                              pRemoteCandidate->pEndpoint->transportAddress.port ) );
-
-                LogDebug( ( "Added new remote candidate with ID: 0x%04x", pCtx->iceContext.pRemoteCandidates[ pCtx->iceContext.numRemoteCandidates - 1 ].candidateId ) );
+                LogInfo( ( "Accepted remote candidate type %d ID 0x%04x at %s/%d",
+                           pRemoteCandidate->candidateType,
+                           pCtx->iceContext.pRemoteCandidates[ pCtx->iceContext.numRemoteCandidates - 1 ].candidateId,
+                           IceControllerNet_LogIpAddressInfo( pRemoteCandidate->pEndpoint,
+                                                              ipBuffer,
+                                                              sizeof( ipBuffer ) ),
+                           pRemoteCandidate->pEndpoint->transportAddress.port ) );
             }
         }
         else
@@ -1740,7 +1722,6 @@ IceControllerResult_t IceController_SendToRemotePeer( IceControllerContext_t * p
                 }
                 else
                 {
-                    ic_raw_puts( "[ic] iceMtx<TIMEOUT\r\n" );
                     LogError( ( "iceMutex timeout (500 ms) — TURN channel-data path wedged" ) );
                     ret = ICE_CONTROLLER_RESULT_FAIL_MUTEX_TAKE;
                 }

@@ -35,6 +35,7 @@
 #include <time.h>
 
 #include "FreeRTOS.h"
+#include "queue.h"
 #include "semphr.h"
 #include "task.h"
 
@@ -99,6 +100,14 @@
 #define SIG_CLIENT_ID_MAX 64
 #define SIG_WS_MUTEX_TIMEOUT_MS 500U
 
+// Outbox queue depth. Producers (signaling_send_answer,
+// signaling_send_ice_candidate, called from peer-connection's session task
+// when local ICE candidates appear) drop pre-formed WSS envelopes here;
+// signaling_tick (webrtc task) drains them under the wslay lock. Sized for
+// the worst-case offer-and-trickle burst (one answer + several candidates
+// in quick succession) without ever forcing a producer to wait.
+#define SIG_OUTBOX_DEPTH 16U
+
 // WSS upgrade transport constants.
 #define WSS_PORT 443
 #define WSS_RFC6455_GUID "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -138,10 +147,24 @@
 // We dispatch synchronously from on_msg_recv (matching the Ameba/N6 reference
 // pattern) into the caller's SDP buffer, since a single-slot latch silently
 // dropped earlier frames in the burst — typically the SDP_OFFER itself.
+// Cross-task handoff for outbound WSS messages. Producer (the task that
+// calls signaling_send_*) builds the full envelope on the heap, then drops
+// {envelope, len} into outbox_queue and returns immediately. Consumer
+// (signaling_tick on the webrtc task) is the sole owner of wslay state: it
+// drains the queue, hands each envelope to wslay_event_queue_msg (which
+// copies the bytes internally), then free()s the envelope. This eliminates
+// the producer-side wait on TLS-write that the previous shared-mutex design
+// suffered from — see "synchronous-drain wart" in PILOT.md §69.
+typedef struct SignalingOutboxItem {
+    uint8_t *envelope;
+    size_t   len;
+} SignalingOutboxItem_t;
+
 struct SignalingCtx {
     NetworkContext_t net_ctx;
     wslay_event_context_ptr ws_ctx;
     SemaphoreHandle_t ws_mutex;
+    QueueHandle_t outbox_queue;
     bool connected;
     bool transport_error;
     // Caller's SDP buffer for the in-flight signaling_wait_for_offer call.
@@ -673,6 +696,8 @@ enc_fail:
 // path end-to-end ahead of wiring wslay.
 
 
+static void drain_outbox_locked(SignalingHandle sig);
+
 static int signaling_lock(SignalingHandle sig, TickType_t wait_ticks) {
     if (NULL == sig || NULL == sig->ws_mutex) {
         return -1;
@@ -1099,6 +1124,14 @@ SignalingHandle signaling_connect(const char *signed_url) {
         }
     }
 
+    if (NULL == g_sig.outbox_queue) {
+        g_sig.outbox_queue = xQueueCreate(SIG_OUTBOX_DEPTH, sizeof(SignalingOutboxItem_t));
+        if (NULL == g_sig.outbox_queue) {
+            printf("[signaling] failed to create outbox queue\n");
+            return NULL;
+        }
+    }
+
     char *host = NULL;
     const char *path = NULL;
     if (0 != wss_url_split(signed_url, &host, &path)) {
@@ -1293,6 +1326,15 @@ void signaling_disconnect(SignalingHandle sig) {
         wslay_event_context_free(sig->ws_ctx);
         sig->ws_ctx = NULL;
     }
+    // Drain any envelopes that producers queued after the transport went
+    // away — wslay is gone, nothing left to send. Free the buffers so they
+    // don't leak across the next session.
+    if (NULL != sig->outbox_queue) {
+        SignalingOutboxItem_t drop;
+        while (pdTRUE == xQueueReceive(sig->outbox_queue, &drop, 0)) {
+            free(drop.envelope);
+        }
+    }
     sig->offer_sdp_buf = NULL;
     sig->offer_sdp_cap = 0;
     sig->offer_sdp_len = 0;
@@ -1366,6 +1408,7 @@ int signaling_wait_for_offer(SignalingHandle sig, char *out_sdp, size_t out_sdp_
             goto out;
         }
 
+        drain_outbox_locked(sig);
         // Send any queued frames first (close, pong, future messages).
         if (wslay_event_want_write(sig->ws_ctx)) {
             int wrc = wslay_event_send(sig->ws_ctx);
@@ -1436,6 +1479,31 @@ out:
     return rc;
 }
 
+// Move every queued envelope into wslay's own internal TX list. Caller must
+// hold ws_mutex — we touch wslay state. wslay_event_queue_msg copies the
+// payload, so the envelope buffer is safe to free immediately after.
+static void drain_outbox_locked(SignalingHandle sig) {
+    if (NULL == sig->outbox_queue || NULL == sig->ws_ctx) {
+        return;
+    }
+    SignalingOutboxItem_t item;
+    while (pdTRUE == xQueueReceive(sig->outbox_queue, &item, 0)) {
+        struct wslay_event_msg ws_msg = {
+            .opcode     = WSLAY_TEXT_FRAME,
+            .msg        = item.envelope,
+            .msg_length = item.len,
+        };
+        int wrc = wslay_event_queue_msg(sig->ws_ctx, &ws_msg);
+        if (0 != wrc) {
+            printf("[signaling] wslay_event_queue_msg failed: %d (envelope %u bytes dropped)\n",
+                   wrc, (unsigned) item.len);
+        } else {
+            printf("[signaling] drained: handed %u bytes to wslay\n", (unsigned) item.len);
+        }
+        free(item.envelope);
+    }
+}
+
 int signaling_tick(SignalingHandle sig) {
     if (NULL == sig || !sig->connected || NULL == sig->ws_ctx) {
         return -1;
@@ -1453,6 +1521,7 @@ int signaling_tick(SignalingHandle sig) {
         signaling_unlock(sig);
         return -1;
     }
+    drain_outbox_locked(sig);
     if (wslay_event_want_write(sig->ws_ctx)) {
         int wrc = wslay_event_send(sig->ws_ctx);
         if (0 != wrc) {
@@ -1494,27 +1563,25 @@ int signaling_send_answer(SignalingHandle sig, const char *sdp_answer) {
         return -1;
     }
 
-    if (0 != signaling_lock(sig, pdMS_TO_TICKS(SIG_WS_MUTEX_TIMEOUT_MS))) {
-        return -1;
-    }
-
-    if (!sig->connected || NULL == sig->ws_ctx) {
-        signaling_unlock(sig);
-        return -1;
-    }
+    // peer_client_id is written exactly once per session (dispatch_text_frame
+    // when the SDP_OFFER lands, under the wslay lock) and never mutated again
+    // until signaling_disconnect. Producers (this function, send_ice_candidate)
+    // only fire AFTER signaling_wait_for_offer returned, so the bytes are
+    // already stable by the time we get here — safe to snapshot without a
+    // lock, and importantly we don't have to wait on the wslay-state mutex
+    // that signaling_tick holds across blocking TLS I/O.
     if (sig->transport_error) {
         printf("[signaling] send_answer: transport already in error\n");
-        signaling_unlock(sig);
         return -1;
     }
     peer_client_id_len = sig->peer_client_id_len;
-    if (peer_client_id_len >= sizeof(peer_client_id)) {
-        signaling_unlock(sig);
+    if (peer_client_id_len == 0 || peer_client_id_len >= sizeof(peer_client_id)) {
+        printf("[signaling] send_answer: peer_client_id not yet set (len=%u)\n",
+               (unsigned) peer_client_id_len);
         return -1;
     }
     memcpy(peer_client_id, sig->peer_client_id, peer_client_id_len);
     peer_client_id[peer_client_id_len] = '\0';
-    signaling_unlock(sig);
 
     printf("[signaling] send_answer: peer_client_id='%.*s' (len=%u)\n",
            (int) peer_client_id_len, peer_client_id,
@@ -1571,28 +1638,14 @@ int signaling_send_answer(SignalingHandle sig, const char *sdp_answer) {
     printf("[signaling] send_answer envelope (first 256 bytes): %.*s\n",
            (int)(env_len < 256 ? env_len : 256), env_buf);
 
-    // Queue as a single WS text frame. wslay_event_omsg_non_fragmented_init
-    // mallocs+memcpys the msg, so env_buf is safe to free immediately after.
-    struct wslay_event_msg ws_msg = {
-        .opcode     = WSLAY_TEXT_FRAME,
-        .msg        = (const uint8_t *) env_buf,
-        .msg_length = env_len,
-    };
-
-    if (0 != signaling_lock(sig, pdMS_TO_TICKS(SIG_WS_MUTEX_TIMEOUT_MS))) {
+    // Hand the envelope off to the webrtc task via the outbox queue.
+    // signaling_tick (sole owner of wslay state) will pick it up, call
+    // wslay_event_queue_msg, and free env_buf. Producer side never touches
+    // wslay and never waits on TLS-write.
+    SignalingOutboxItem_t item = { .envelope = (uint8_t *) env_buf, .len = env_len };
+    if (pdTRUE != xQueueSend(sig->outbox_queue, &item, 0)) {
+        printf("[signaling] send_answer: outbox full, dropping (%u bytes)\n", (unsigned) env_len);
         free(env_buf);
-        return -1;
-    }
-    if (!sig->connected || NULL == sig->ws_ctx || sig->transport_error) {
-        signaling_unlock(sig);
-        free(env_buf);
-        return -1;
-    }
-    int wrc = wslay_event_queue_msg(sig->ws_ctx, &ws_msg);
-    signaling_unlock(sig);
-    free(env_buf);
-    if (0 != wrc) {
-        printf("[signaling] wslay_event_queue_msg failed: %d\n", wrc);
         return -1;
     }
     printf("[signaling] send_answer: queued (%u bytes), signaling_tick will drain it\n", (unsigned) env_len);
@@ -1613,27 +1666,19 @@ int signaling_send_ice_candidate(
         return -1;
     }
 
-    if (0 != signaling_lock(sig, pdMS_TO_TICKS(SIG_WS_MUTEX_TIMEOUT_MS))) {
-        return -1;
-    }
-
-    if (!sig->connected || NULL == sig->ws_ctx) {
-        signaling_unlock(sig);
-        return -1;
-    }
+    // peer_client_id snapshot rationale: see signaling_send_answer.
     if (sig->transport_error) {
         printf("[signaling] send_ice_candidate: transport already in error\n");
-        signaling_unlock(sig);
         return -1;
     }
     peer_client_id_len = sig->peer_client_id_len;
-    if (peer_client_id_len >= sizeof(peer_client_id)) {
-        signaling_unlock(sig);
+    if (peer_client_id_len == 0 || peer_client_id_len >= sizeof(peer_client_id)) {
+        printf("[signaling] send_ice_candidate: peer_client_id not yet set (len=%u)\n",
+               (unsigned) peer_client_id_len);
         return -1;
     }
     memcpy(peer_client_id, sig->peer_client_id, peer_client_id_len);
     peer_client_id[peer_client_id_len] = '\0';
-    signaling_unlock(sig);
 
     /* Build the inner JSON payload that the browser's signaling layer parses
      * into RTCIceCandidateInit. The senderClientId / messagePayload envelope
@@ -1698,26 +1743,11 @@ int signaling_send_ice_candidate(
         return -1;
     }
 
-    struct wslay_event_msg ws_msg = {
-        .opcode     = WSLAY_TEXT_FRAME,
-        .msg        = (const uint8_t *) env_buf,
-        .msg_length = env_len,
-    };
-
-    if (0 != signaling_lock(sig, pdMS_TO_TICKS(SIG_WS_MUTEX_TIMEOUT_MS))) {
+    // Producer-side hand-off — see signaling_send_answer for the rationale.
+    SignalingOutboxItem_t item = { .envelope = (uint8_t *) env_buf, .len = env_len };
+    if (pdTRUE != xQueueSend(sig->outbox_queue, &item, 0)) {
+        printf("[signaling] send_ice_candidate: outbox full, dropping (%u bytes)\n", (unsigned) env_len);
         free(env_buf);
-        return -1;
-    }
-    if (!sig->connected || NULL == sig->ws_ctx || sig->transport_error) {
-        signaling_unlock(sig);
-        free(env_buf);
-        return -1;
-    }
-    int wrc = wslay_event_queue_msg(sig->ws_ctx, &ws_msg);
-    signaling_unlock(sig);
-    free(env_buf);
-    if (0 != wrc) {
-        printf("[signaling] wslay_event_queue_msg (ICE) failed: %d\n", wrc);
         return -1;
     }
 

@@ -18,22 +18,7 @@
 #include "h264_packetizer.h"
 #include "h264_depacketizer.h"
 
-/* ── Raw UART debug (bypasses FreeRTOS logging) ────────────────────────── */
-/* Bounded spin — see the detailed rationale in kvs_webrtc_task.c.         */
 extern void vPetWatchdog( void );
-static inline void h264_raw_putc( char c )
-{
-    for( uint32_t i = 0; i < 600000UL; i++ )
-    {
-        if( *(volatile uint32_t *)0x56000C1CUL & ( 1UL << 7 ) )
-        {
-            *(volatile uint32_t *)0x56000C28UL = ( uint32_t ) c;
-            return;
-        }
-    }
-    vPetWatchdog();
-}
-static void h264_raw_puts( const char *s ) { while( *s ) h264_raw_putc( *s++ ); }
 
 PeerConnectionResult_t PeerConnectionH264Helper_GetH264PacketProperty( PeerConnectionJitterBufferPacket_t * pPacket,
                                                                        uint8_t * pIsStartPacket )
@@ -254,7 +239,6 @@ PeerConnectionResult_t PeerConnectionH264Helper_WriteH264Frame( PeerConnectionSe
         }
         else
         {
-            h264_raw_puts( "[h264] M<TIMEOUT\r\n" );
             LogError( ( "senderMutex timeout (500 ms) — prior frame wedged" ) );
             ret = PEER_CONNECTION_RESULT_FAIL_TAKE_SENDER_MUTEX;
         }

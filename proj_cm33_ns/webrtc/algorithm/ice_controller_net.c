@@ -31,25 +31,7 @@
 #endif
 #include "networking_utils.h"
 
-/* ── Raw UART debug (bypasses FreeRTOS logging) ────────────────────────── */
-/* Bounded spin — see rationale in kvs_webrtc_task.c. */
 extern void vPetWatchdog( void );
-static inline void icn_raw_putc( char c )
-{
-    printf("%c", c);
-    vPetWatchdog();
-}
-static void icn_raw_puts( const char *s ) { while( *s ) icn_raw_putc( *s++ ); }
-static void icn_raw_putn( const char *s, int n ) { while( n-- > 0 ) icn_raw_putc( *s++ ); }
-static void icn_raw_dec( int v )
-{
-    char buf[ 12 ];
-    int  n = 0;
-    if( v < 0 ) { icn_raw_putc( '-' ); v = -v; }
-    if( v == 0 ) { icn_raw_putc( '0' ); return; }
-    while( v > 0 ) { buf[ n++ ] = '0' + ( v % 10 ); v /= 10; }
-    while( n-- ) icn_raw_putc( buf[ n ] );
-}
 
 #define ICE_CONTROLLER_STUN_MESSAGE_TYPE_STRING_UNKNOWN "UNKNOWN"
 #define ICE_CONTROLLER_STUN_MESSAGE_TYPE_STRING_BINDING_REQUEST "BINDING_REQUEST"
@@ -446,27 +428,20 @@ static IceControllerResult_t SendSocketPacket( IceControllerSocketContext_t * pS
              * indefinitely when its TX buffer fills. Pet watchdog either side
              * so IWDG does not reset before we capture the log. */
             vPetWatchdog();
-            // icn_raw_putc( 'S' );
             sentBytes = sendto( pSocketContext->socketFd,
                                 pBuffer + sendTotalBytes,
                                 length - sendTotalBytes,
                                 flags,
                                 pDestinationAddress,
                                 addressLength );
-            // icn_raw_putc( 's' );
             vPetWatchdog();
         }
         else if( pSocketContext->socketType == ICE_CONTROLLER_SOCKET_TYPE_TLS )
         {
-            /* Diagnostic: bracket TLS-branch send with W/w markers so we can
-             * distinguish turns: (TCP/TLS relay) from turn: (plain UDP relay)
-             * when diagnosing sender wedges. */
             vPetWatchdog();
-            // icn_raw_putc( 'W' );
             sentBytes = TLS_FreeRTOS_send( &pSocketContext->tlsSession.xTlsNetworkContext,
                                            pBuffer + sendTotalBytes,
                                            length - sendTotalBytes );
-            // icn_raw_putc( 'w' );
             vPetWatchdog();
         }
         else
@@ -782,24 +757,10 @@ static void AddRelayCandidates( IceControllerContext_t * pCtx )
             /* Reset ret for every round. */
             ret = ICE_CONTROLLER_RESULT_OK;
 
-            /* Raw-UART per-server header so we can correlate every step with
-             * the actual ICE server entry.  serverType: 1=STUN, 2=TURN,
-             * 3=TURNS.  protocol: 0=NONE, 1=UDP, 2=TCP.                    */
-            icn_raw_puts( "[icn] relay[" );
-            icn_raw_dec( ( int ) i );
-            icn_raw_puts( "] type=" );
-            icn_raw_dec( ( int ) pCtx->iceServers[i].serverType );
-            icn_raw_puts( " proto=" );
-            icn_raw_dec( ( int ) pCtx->iceServers[i].protocol );
-            icn_raw_puts( " url=" );
-            icn_raw_putn( pCtx->iceServers[i].url, ( int ) pCtx->iceServers[i].urlLength );
-            icn_raw_puts( "\r\n" );
-
             if( ( pCtx->iceServers[i].serverType != ICE_CONTROLLER_ICE_SERVER_TYPE_TURN ) &&
                 ( pCtx->iceServers[i].serverType != ICE_CONTROLLER_ICE_SERVER_TYPE_TURNS ) )
             {
                 /* Skip STUN servers. */
-                icn_raw_puts( "[icn] relay skip:STUN\r\n" );
                 continue;
             }
             else if( ( pCtx->iceServers[i].protocol != ICE_SOCKET_PROTOCOL_UDP ) &&
@@ -809,7 +770,6 @@ static void AddRelayCandidates( IceControllerContext_t * pCtx )
                            pCtx->iceServers[i].protocol,
                            ( int ) pCtx->iceServers[i].urlLength,
                            pCtx->iceServers[i].url ) );
-                icn_raw_puts( "[icn] relay skip:unknownProto\r\n" );
                 continue;
             }
             else if( ( pCtx->iceServers[i].protocol == ICE_SOCKET_PROTOCOL_UDP ) &&
@@ -820,7 +780,6 @@ static void AddRelayCandidates( IceControllerContext_t * pCtx )
                            pCtx->iceServers[i].serverType,
                            ( int ) pCtx->iceServers[i].urlLength,
                            pCtx->iceServers[i].url ) );
-                icn_raw_puts( "[icn] relay skip:turnsUDP\r\n" );
                 continue;
             }
             else if( ( pCtx->iceServers[i].protocol == ICE_SOCKET_PROTOCOL_TCP ) &&
@@ -831,7 +790,6 @@ static void AddRelayCandidates( IceControllerContext_t * pCtx )
                            pCtx->iceServers[i].serverType,
                            ( int ) pCtx->iceServers[i].urlLength,
                            pCtx->iceServers[i].url ) );
-                icn_raw_puts( "[icn] relay skip:turnTCP\r\n" );
                 continue;
             }
             else
@@ -840,15 +798,10 @@ static void AddRelayCandidates( IceControllerContext_t * pCtx )
                            ( int ) pCtx->iceServers[i].urlLength,
                            pCtx->iceServers[i].url,
                            pCtx->iceServers[i].protocol == ICE_SOCKET_PROTOCOL_UDP ? "UDP" : "TLS" ) );
-                icn_raw_puts( "[icn] relay PASS filter\r\n" );
             }
 
-            icn_raw_puts( "[icn] relay dns>\r\n" );
             dnsResult = IceControllerNet_DnsLookUp( pCtx->iceServers[ i ].url,
                                                     &pCtx->iceServers[ i ].iceEndpoint.transportAddress );
-            icn_raw_puts( "[icn] relay dns<r=" );
-            icn_raw_dec( ( int ) dnsResult );
-            icn_raw_puts( "\r\n" );
             if( dnsResult != ICE_CONTROLLER_RESULT_OK )
             {
                 LogWarn( ( "Fail to get the DNS result of STUN server: %.*s",
@@ -857,22 +810,14 @@ static void AddRelayCandidates( IceControllerContext_t * pCtx )
                 continue;
             }
 
-            icn_raw_puts( "[icn] relay sock>\r\n" );
             ret = CreateSocketContext( pCtx, STUN_ADDRESS_IPv4, NULL, &pCtx->iceServers[i].iceEndpoint, pCtx->iceServers[i].protocol, &pSocketContext );
-            icn_raw_puts( "[icn] relay sock<r=" );
-            icn_raw_dec( ( int ) ret );
-            icn_raw_puts( "\r\n" );
 
             if( ret == ICE_CONTROLLER_RESULT_OK )
             {
                 if( xSemaphoreTake( pCtx->iceMutex, portMAX_DELAY ) == pdTRUE )
                 {
-                    icn_raw_puts( "[icn] relay addCand>\r\n" );
                     iceResult = Ice_AddRelayCandidate( &pCtx->iceContext, &pCtx->iceServers[i].iceEndpoint, pCtx->iceServers[i].userName, pCtx->iceServers[i].userNameLength, pCtx->iceServers[i].password, pCtx->iceServers[i].passwordLength );
                     xSemaphoreGive( pCtx->iceMutex );
-                    icn_raw_puts( "[icn] relay addCand<r=" );
-                    icn_raw_dec( ( int ) iceResult );
-                    icn_raw_puts( "\r\n" );
 
                     if( iceResult != ICE_RESULT_OK )
                     {
@@ -906,23 +851,6 @@ static void AddRelayCandidates( IceControllerContext_t * pCtx )
                               IceControllerNet_LogIpAddressInfo( &pCtx->iceServers[ i ].iceEndpoint, ipBuffer, sizeof( ipBuffer ) ),
                               pCtx->iceServers[ i ].iceEndpoint.transportAddress.port ) );
 
-                /* Raw-UART confirmation that this server entry produced a
-                 * relay candidate.  ID lets us match against the candidate
-                 * list dump (Print Candidates / Pairs States) in subsequent
-                 * RTP/RTCP traffic.                                          */
-                icn_raw_puts( "[icn] relay CREATED proto=" );
-                icn_raw_dec( ( int ) pCtx->iceServers[i].protocol );
-                icn_raw_puts( " id=0x" );
-                {
-                    static const char hex[] = "0123456789abcdef";
-                    uint16_t cid = pCtx->iceContext.pLocalCandidates[ pCtx->iceContext.numLocalCandidates - 1 ].candidateId;
-                    icn_raw_putc( hex[ ( cid >> 12 ) & 0xF ] );
-                    icn_raw_putc( hex[ ( cid >> 8 ) & 0xF ] );
-                    icn_raw_putc( hex[ ( cid >> 4 ) & 0xF ] );
-                    icn_raw_putc( hex[ cid & 0xF ] );
-                }
-                icn_raw_puts( "\r\n" );
-
                 pCtx->metrics.pendingRelayCandidateNum++;
             }
             else if( ret == ICE_CONTROLLER_RESULT_CONNECTION_IN_PROGRESS )
@@ -936,20 +864,7 @@ static void AddRelayCandidates( IceControllerContext_t * pCtx )
 
                 LogVerbose( ( "Connection in-progress with TURN server for socket fd %d...", pSocketContext->socketFd ) );
 
-                icn_raw_puts( "[icn] relay IN_PROGRESS proto=" );
-                icn_raw_dec( ( int ) pCtx->iceServers[i].protocol );
-                icn_raw_puts( "\r\n" );
-
                 pCtx->metrics.pendingRelayCandidateNum++;
-            }
-            else
-            {
-                /* CreateSocketContext returned an error not handled above —
-                 * for the UDP path this is the most likely place to lose a
-                 * relay silently if e.g. ST67W6X UDP socket creation fails.  */
-                icn_raw_puts( "[icn] relay DROPPED ret=" );
-                icn_raw_dec( ( int ) ret );
-                icn_raw_puts( "\r\n" );
             }
         }
     }
@@ -1225,7 +1140,6 @@ IceControllerResult_t IceControllerNet_SendPacket( IceControllerContext_t * pCtx
         }
         else
         {
-            icn_raw_puts( "[icn] sockMtx<TIMEOUT\r\n" );
             LogError( ( "socketMutex timeout (1500 ms) — prior send wedged" ) );
             ret = ICE_CONTROLLER_RESULT_FAIL_MUTEX_TAKE;
         }

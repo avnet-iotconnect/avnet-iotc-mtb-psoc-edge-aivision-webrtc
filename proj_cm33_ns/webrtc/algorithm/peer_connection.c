@@ -54,39 +54,7 @@
 
 #define PEER_CONNECTION_MAX_DTLS_DECRYPTED_DATA_LENGTH ( 2048 )
 
-/* ── Raw UART debug for DTLS handshake hang diagnostic ───────────────────── */
-/* Bounded spin — see rationale in kvs_webrtc_task.c. */
 extern void vPetWatchdog( void );
-static inline void pc_raw_putc( char c )
-{
-    for( uint32_t i = 0; i < 600000UL; i++ )
-    {
-        if( *(volatile uint32_t *)0x56000C1CUL & ( 1UL << 7 ) )
-        {
-            *(volatile uint32_t *)0x56000C28UL = ( uint32_t ) c;
-            return;
-        }
-    }
-    vPetWatchdog();
-}
-static void pc_raw_puts( const char *s ) { while( *s ) pc_raw_putc( *s++ ); }
-static void pc_raw_hex8( uint8_t v )
-{
-    static const char hex[] = "0123456789ABCDEF";
-    pc_raw_putc( hex[ ( v >> 4 ) & 0xF ] );
-    pc_raw_putc( hex[ v & 0xF ] );
-}
-static void pc_raw_dec( int v )
-{
-    char buf[ 12 ];
-    int i = 0;
-    int neg = 0;
-    if( v < 0 ) { neg = 1; v = -v; }
-    if( v == 0 ) buf[ i++ ] = '0';
-    while( v > 0 ) { buf[ i++ ] = '0' + ( v % 10 ); v /= 10; }
-    if( neg ) pc_raw_putc( '-' );
-    while( i-- > 0 ) pc_raw_putc( buf[ i ] );
-}
 
 PeerConnectionContext_t peerConnectionContext = { 0 };
 
@@ -719,11 +687,9 @@ static int32_t OnDtlsSendHook( void * pCustomContext,
     PeerConnectionSession_t * pSession = ( PeerConnectionSession_t * ) pCustomContext;
     IceControllerResult_t resultIceController = ICE_CONTROLLER_RESULT_OK;
 
-    pc_raw_puts( "[DTLS] tx>" ); pc_raw_dec( ( int ) bufferLength ); pc_raw_puts( "\r\n" );
     resultIceController = IceController_SendToRemotePeer( &pSession->iceControllerContext,
                                                           pBuffer,
                                                           bufferLength );
-    pc_raw_puts( "[DTLS] tx<" ); pc_raw_dec( ( int ) resultIceController ); pc_raw_puts( "\r\n" );
     if( resultIceController != ICE_CONTROLLER_RESULT_OK )
     {
         LogWarn( ( "Fail to send DTLS packet, ret: %d", resultIceController ) );
@@ -1083,13 +1049,11 @@ static int32_t ProcessDtlsPacket( PeerConnectionSession_t * pSession,
     uint8_t dtlsDecryptBuffer[ PEER_CONNECTION_MAX_DTLS_DECRYPTED_DATA_LENGTH ];
     size_t dtlsDecryptBufferLength = PEER_CONNECTION_MAX_DTLS_DECRYPTED_DATA_LENGTH;
 
-    pc_raw_puts( "[DTLS] proc>" ); pc_raw_dec( ( int ) dtlsEncryptDataLength ); pc_raw_puts( "\r\n" );
     xNetworkStatus = DTLS_ProcessPacket( &pSession->dtlsSession.xNetworkContext,
                                          pDtlsEncryptData,
                                          dtlsEncryptDataLength,
                                          dtlsDecryptBuffer,
                                          &dtlsDecryptBufferLength );
-    pc_raw_puts( "[DTLS] proc<" ); pc_raw_dec( ( int ) xNetworkStatus ); pc_raw_puts( "\r\n" );
 
     if( xNetworkStatus == DTLS_HANDSHAKE_COMPLETE )
     {
