@@ -24,7 +24,6 @@
 #include "ice_data_types.h"
 #include "ice_controller.h"
 #include "peer_connection.h"
-#include "peer_connection_sdp.h"
 #include "signaling.h"
 #include "stun_data_types.h"
 #include "transceiver_data_types.h"
@@ -289,68 +288,6 @@ static void on_local_candidate_ready(void *context, PeerConnectionIceLocalCandid
     }
 }
 
-static int build_answer_from_offer(
-    PeerConnectionSession_t *session,
-    char *offer_sdp,
-    size_t offer_len,
-    char *local_desc_buffer,
-    size_t local_desc_buffer_len,
-    char *answer_buffer,
-    size_t answer_buffer_len,
-    size_t *out_answer_len
-) {
-    PeerConnectionBufferSessionDescription_t remote_desc = {
-        .pSdpBuffer = offer_sdp,
-        .sdpBufferLength = offer_len,
-        .type = SDP_CONTROLLER_MESSAGE_TYPE_OFFER,
-    };
-    PeerConnectionBufferSessionDescription_t local_desc = {
-        .pSdpBuffer = local_desc_buffer,
-        .sdpBufferLength = local_desc_buffer_len,
-        .type = SDP_CONTROLLER_MESSAGE_TYPE_ANSWER,
-    };
-    PeerConnectionResult_t pc_rc;
-
-    *out_answer_len = answer_buffer_len;
-
-    pc_rc = PeerConnectionSdp_DeserializeSdpMessage(&remote_desc);
-    if (PEER_CONNECTION_RESULT_OK != pc_rc) {
-        printf("[webrtc] PeerConnectionSdp_DeserializeSdpMessage failed: %d\n", (int) pc_rc);
-        return -1;
-    }
-
-    pc_rc = PeerConnectionSdp_SetPayloadTypes(session, &remote_desc);
-    if (PEER_CONNECTION_RESULT_OK != pc_rc) {
-        printf("[webrtc] PeerConnectionSdp_SetPayloadTypes failed: %d\n", (int) pc_rc);
-        return -1;
-    }
-
-    // fork-aivision: PopulateSessionDescription reads TWCC info back from the
-    // session's cached remoteSessionDescription on the answer path, so keep the
-    // parsed offer struct there for this S6b offer->answer round-trip.
-    session->remoteSessionDescription = remote_desc;
-
-    pc_rc = PeerConnectionSdp_PopulateSessionDescription(
-        session,
-        &remote_desc,
-        &local_desc,
-        answer_buffer,
-        out_answer_len
-    );
-    if (PEER_CONNECTION_RESULT_OK != pc_rc) {
-        printf("[webrtc] PeerConnectionSdp_PopulateSessionDescription failed: %d\n", (int) pc_rc);
-        return -1;
-    }
-
-    pc_rc = PeerConnection_SetLocalDescription(session, &local_desc);
-    if (PEER_CONNECTION_RESULT_OK != pc_rc) {
-        printf("[webrtc] PeerConnection_SetLocalDescription failed: %d\n", (int) pc_rc);
-        return -1;
-    }
-
-    return 0;
-}
-
 static int run_session(void) {
     // Per-session locals. Everything lives in this stack frame; nothing
     // survives when the function returns. The PeerConnection struct in
@@ -429,14 +366,15 @@ static int run_session(void) {
     signaling_bridge.sig = sig;
     signaling_set_peer_connection(sig, &session);
 
-    // Phase: SDP offer/answer. All three SDP-sized buffers are stack-scoped
-    // inside this block — answer + local-desc die before SetRemoteDescription
-    // runs, and offer_sdp dies when the outer block closes. Safe because
-    // peer_connection.c:1832 copies the offer into session->remoteSdpBuffer
-    // and rewrites the pointer before returning.
+    // Phase: SDP offer/answer. Canonical upstream flow:
+    //   SetRemoteDescription → CreateAnswer → SetLocalDescription → send.
+    // SetRemoteDescription copies the offer into session->remoteSdpBuffer
+    // (peer_connection.c ~line 1791), inits DTLS, and starts the ICE
+    // controller, so offer_sdp can drop out of scope before CreateAnswer.
     {
         char offer_sdp[APP_WEBRTC_SDP_BUF_LEN]; // 12 KB
         size_t offer_len = 0;
+        PeerConnectionBufferSessionDescription_t remote_desc;
 
         printf("[webrtc] waiting for SDP offer...\n");
         if (0 != signaling_wait_for_offer(sig, offer_sdp, sizeof(offer_sdp), &offer_len)) {
@@ -444,30 +382,6 @@ static int run_session(void) {
             goto cleanup;
         }
 
-        {
-            char local_desc_buffer[PEER_CONNECTION_SDP_DESCRIPTION_BUFFER_MAX_LENGTH];  // 10 KB
-            char answer_buffer[PEER_CONNECTION_SDP_DESCRIPTION_BUFFER_MAX_LENGTH + 1U]; // 10 KB
-            size_t answer_len = PEER_CONNECTION_SDP_DESCRIPTION_BUFFER_MAX_LENGTH;
-
-            if (0 != build_answer_from_offer(
-                &session,
-                offer_sdp, offer_len,
-                local_desc_buffer, sizeof(local_desc_buffer),
-                answer_buffer, PEER_CONNECTION_SDP_DESCRIPTION_BUFFER_MAX_LENGTH,
-                &answer_len
-            )) {
-                goto cleanup;
-            }
-
-            answer_buffer[answer_len] = '\0';
-            if (0 != signaling_send_answer(sig, answer_buffer)) {
-                printf("[webrtc] signaling_send_answer failed\n");
-                goto cleanup;
-            }
-            printf("[webrtc] answer queued (%d bytes)\n", (int) answer_len);
-        } // local_desc_buffer + answer_buffer die here (~20 KB freed)
-
-        PeerConnectionBufferSessionDescription_t remote_desc;
         memset(&remote_desc, 0, sizeof(remote_desc));
         remote_desc.pSdpBuffer = offer_sdp;
         remote_desc.sdpBufferLength = offer_len;
@@ -477,7 +391,36 @@ static int run_session(void) {
             printf("[webrtc] PeerConnection_SetRemoteDescription failed\n");
             goto cleanup;
         }
-    } // offer_sdp dies here (~12 KB freed)
+    } // offer_sdp dies here (~12 KB freed); offer now lives in session->remoteSdpBuffer
+
+    {
+        char local_desc_buffer[PEER_CONNECTION_SDP_DESCRIPTION_BUFFER_MAX_LENGTH];  // 10 KB
+        char answer_buffer[PEER_CONNECTION_SDP_DESCRIPTION_BUFFER_MAX_LENGTH + 1U]; // 10 KB
+        PeerConnectionBufferSessionDescription_t answer_desc;
+        size_t answer_len = PEER_CONNECTION_SDP_DESCRIPTION_BUFFER_MAX_LENGTH;
+
+        memset(&answer_desc, 0, sizeof(answer_desc));
+        answer_desc.pSdpBuffer = local_desc_buffer;
+        answer_desc.sdpBufferLength = sizeof(local_desc_buffer);
+        answer_desc.type = SDP_CONTROLLER_MESSAGE_TYPE_ANSWER;
+
+        if (PEER_CONNECTION_RESULT_OK != PeerConnection_CreateAnswer(&session, &answer_desc, answer_buffer, &answer_len)) {
+            printf("[webrtc] PeerConnection_CreateAnswer failed\n");
+            goto cleanup;
+        }
+
+        if (PEER_CONNECTION_RESULT_OK != PeerConnection_SetLocalDescription(&session, &answer_desc)) {
+            printf("[webrtc] PeerConnection_SetLocalDescription failed\n");
+            goto cleanup;
+        }
+
+        answer_buffer[answer_len] = '\0';
+        if (0 != signaling_send_answer(sig, answer_buffer)) {
+            printf("[webrtc] signaling_send_answer failed\n");
+            goto cleanup;
+        }
+        printf("[webrtc] answer queued (%d bytes)\n", (int) answer_len);
+    } // local_desc_buffer + answer_buffer die here (~20 KB freed)
 
     // Phase: media + signaling pump. No SDP-sized buffers from here on. ICE
     // checks → DTLS handshake → SRTP keying run inside PeerConnection's
