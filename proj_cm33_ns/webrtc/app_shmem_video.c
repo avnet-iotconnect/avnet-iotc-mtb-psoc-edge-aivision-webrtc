@@ -2,7 +2,7 @@
  * Copyright (C) 2026 Avnet
  * Authors: Nikola Markovic <nikola.markovic@avnet.com> et al.
  *
- * CM33-NS dummy consumer of the H.264 NAL ring produced by CM55.
+ * CM33-NS consumer of the H.264 NAL ring produced by CM55.
  * See app_shmem_video.h.
  */
 
@@ -15,27 +15,25 @@
 #include "task.h"
 
 #include "video_ring.h"
+#include "peer_connection.h"
 #include "app_shmem_video.h"
-
-#include "webrtc_smoke_test.h" // TEMP SMOKE TEST. TODO: remove this and the test files after testing.
 
 
 #define APP_SHMEM_VIDEO_TASK_NAME       ("CM33 Shmem Video")
-#define APP_SHMEM_VIDEO_TASK_STACK      (10U * 1024U)
-// Below app_task (priority 2) so TLS handshakes during SDK init aren't
-// starved by the busy-poll consumer once CM55 starts pumping frames.
+#define APP_SHMEM_VIDEO_TASK_STACK      (4U * 1024U)
 #define APP_SHMEM_VIDEO_TASK_PRIORITY   (tskIDLE_PRIORITY + 1U)
 
-/* Polling cadence.  PILOT.md §5.4 calls for 20 ms; encoder runs at
- * ~250 ms per frame so we have ~12x headroom on the consumer side. */
+/* Encoder runs at ~250 ms per frame so we have ~12x headroom on the consumer side. */
 #define APP_SHMEM_VIDEO_POLL_MS         (20U)
 
-/* How often to emit a summary line, in received frames. */
+/* How often to emit a summary line, in delivered frames. */
 #define APP_SHMEM_VIDEO_REPORT_EVERY    (30U)
 
 
 static TaskHandle_t shmem_video_task_handle = NULL;
 static volatile bool shmem_video_running = false;
+static PeerConnectionSession_t *shmem_video_session = NULL;
+static Transceiver_t *shmem_video_transceiver = NULL;
 
 
 static void shmem_video_task(void *arg) {
@@ -46,8 +44,7 @@ static void shmem_video_task(void *arg) {
     uint32_t idr_total = 0;
     uint32_t window_frames = 0;
     uint32_t window_bytes = 0;
-
-    webrtc_smoke_test_run(); // TEMP SMOKE TEST. TODO: remove this and the test files after testing.
+    uint32_t write_fail_total = 0;
 
     for (;;) {
         if (!shmem_video_running) {
@@ -61,8 +58,21 @@ static void shmem_video_task(void *arg) {
             continue;
         }
 
-        /* Stub consumer: just inspect and report.  Real WebRTC media
-         * source will copy / hand off here before releasing. */
+        PeerConnectionFrame_t frame = {
+            .version = 0,
+            .pData = (uint8_t *)view.payload,
+            .dataLength = view.length,
+            .presentationUs = (uint64_t)view.pts_ms * 1000U,
+        };
+
+        PeerConnectionResult_t pcr = PeerConnection_WriteFrame(
+            shmem_video_session, shmem_video_transceiver, &frame);
+        if (pcr != PEER_CONNECTION_RESULT_OK) {
+            write_fail_total++;
+        }
+
+        video_ring_consumer_release();
+
         frames_total++;
         bytes_total += view.length;
         window_frames++;
@@ -71,20 +81,14 @@ static void shmem_video_task(void *arg) {
             idr_total++;
         }
 
-        // printf("[shmemv] seq=%u len=%u is_idr=%d pts_ms=%u\n", (unsigned)view.seq, (unsigned)view.length, (int)view.is_idr, (unsigned)view.pts_ms);
-
-        video_ring_consumer_release();
-
         if (window_frames >= APP_SHMEM_VIDEO_REPORT_EVERY) {
-#if 0
-            printf("[shmemv] summary: total=%u bytes=%u idr=%u (window: %u frames, %u bytes)\n",
-                (unsigned)frames_total, (unsigned)bytes_total, (unsigned)idr_total, (unsigned)window_frames, (unsigned)window_bytes
+            printf("[shmemv] sent=%u bytes=%u idr=%u fail=%u (window: %u frames, %u bytes)\n",
+                (unsigned)frames_total, (unsigned)bytes_total, (unsigned)idr_total,
+                (unsigned)write_fail_total, (unsigned)window_frames, (unsigned)window_bytes
             );
-#endif            
             window_frames = 0;
             window_bytes = 0;
         }
-
     }
 }
 
@@ -103,15 +107,21 @@ void app_shmem_video_init(void) {
 }
 
 
-bool app_shmem_video_start(void) {
+bool app_shmem_video_start(PeerConnectionSession_t *session, Transceiver_t *transceiver) {
     if (shmem_video_task_handle == NULL) {
         printf("[shmemv] start before init\n");
+        return false;
+    }
+    if (session == NULL || transceiver == NULL) {
+        printf("[shmemv] start with NULL session/transceiver\n");
         return false;
     }
     if (shmem_video_running) {
         return true;
     }
 
+    shmem_video_session = session;
+    shmem_video_transceiver = transceiver;
     video_ring_consumer_session_start();
     shmem_video_running = true;
     printf("[shmemv] session started\n");
@@ -125,5 +135,7 @@ void app_shmem_video_stop(void) {
     }
     shmem_video_running = false;
     video_ring_consumer_session_stop();
+    shmem_video_session = NULL;
+    shmem_video_transceiver = NULL;
     printf("[shmemv] session stopped\n");
 }

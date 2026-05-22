@@ -27,8 +27,11 @@ extern "C" {
 
 #include <stdbool.h>
 
+typedef struct PeerConnectionSession PeerConnectionSession_t;
+typedef struct Transceiver Transceiver_t;
+
 void app_shmem_video_init(void);
-bool app_shmem_video_start(void);
+bool app_shmem_video_start(PeerConnectionSession_t *session, Transceiver_t *transceiver);
 void app_shmem_video_stop(void);
 
 #ifdef __cplusplus

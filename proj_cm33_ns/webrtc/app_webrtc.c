@@ -17,6 +17,7 @@
 #include "iotcl.h"
 
 #include "webrtc/app_webrtc.h"
+#include "webrtc/app_shmem_video.h"
 
 #include "aws_creds.h"
 #include "csprng.h"
@@ -425,18 +426,22 @@ static int run_session(void) {
         printf("[webrtc] answer queued (%d bytes)\n", (int) answer_len);
     }
 
+    (void) app_shmem_video_start(&session, &video_transceiver);
+
     printf("[webrtc] entering media/signaling pump\n");
     while (s_streaming_requested) {
         if (0 != signaling_tick(sig)) {
             printf("[webrtc] signaling_tick reported disconnect\n");
             break;
         }
-        /* TODO: drain M2 shmem ring → PeerConnection_WriteFrame. */
         vTaskDelay(pdMS_TO_TICKS(APP_WEBRTC_POLL_IDLE_MS));
     }
     rc = 0;
 
 cleanup:
+    /* Must run before the session/transceiver stack frames die — the
+     * consumer task holds raw pointers to them. */
+    app_shmem_video_stop();
     if (NULL != sig) {
         signaling_set_peer_connection(sig, NULL);
     }

@@ -22,7 +22,6 @@
 #include "app_eeprom_data.h"
 
 #include "app_config.h"
-#include "app_shmem_video.h"
 #include "app_webrtc.h"
 
 #include <inttypes.h>
@@ -237,11 +236,6 @@ void app_task(void *pvParameters) {
         taskYIELD(); // wait for CM55
     }
     printf("\nApp Task: CM55 IPC is ready. Resuming the application...\n");
-
-    // Disabled: WebRTC task owns the ring consumer once started (see app_webrtc.c
-    // and WEBRTC_TASK.md §3.5). The ring has a single consumer slot. Re-enable
-    // for offline ring debugging only when WebRTC is not started below.
-    // app_shmem_video_start();
 
     char iotc_duid[IOTCL_CONFIG_DUID_MAX_LEN] = IOTCONNECT_DUID;
     if (0 == strlen(iotc_duid)) {
