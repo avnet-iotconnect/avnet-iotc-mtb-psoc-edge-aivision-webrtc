@@ -899,7 +899,7 @@ IceControllerResult_t IceController_AddRemoteCandidate( IceControllerContext_t *
 
         if( acceptCandidate == 0U )
         {
-            LogInfo( ( "Dropping remote candidate with type: %d, NAT traversal config bitmap: 0x%x", pRemoteCandidate->candidateType, pCtx->natTraversalConfigBitmap ) );
+            // `LogInfo( ( "Dropping remote candidate with type: %d, NAT traversal config bitmap: 0x%x", pRemoteCandidate->candidateType, pCtx->natTraversalConfigBitmap ) );
             ret = ICE_CONTROLLER_RESULT_FAIL_ADD_CANDIDATE_TYPE;
         }
     }

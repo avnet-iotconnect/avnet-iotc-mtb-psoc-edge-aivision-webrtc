@@ -698,6 +698,61 @@ enc_fail:
 
 static void drain_outbox_locked(SignalingHandle sig);
 
+// Convert real CR/LF byte pairs in `in` to the 4-char JSON-escape form
+// `\r\n` (backslash, 'r', backslash, 'n') and copy into `out`.
+//
+// Why: upstream's SDP serializer wraps the answer as
+// `{"type":"answer","sdp":"<sdp body with literal \r\n bytes>"}`. That's
+// invalid JSON — strings can't contain raw control characters per RFC 8259.
+// The browser-side JSON.parse throws SyntaxError before the message reaches
+// the WebRTC API. Ameba's reference calls
+// `SignalingController_SerializeSdpContentNewline` for the same reason;
+// this is the inlined equivalent. Must be called BEFORE base64 / WSS
+// envelope construction. The matching DeserializeSdpContentNewline isn't
+// needed on the receive path because our SDP parser tolerates either form
+// (verified — offer parsing works today).
+//
+// Output is up to ~2x input on lines that are pure CRLF; in practice
+// (one CRLF per ~30-byte SDP line) growth is ~7%. Caller passes the
+// buffer capacity in *out_len; on success *out_len is set to bytes written.
+// Returns 0 on success, -1 on overflow.
+static int escape_sdp_newlines(const char *in, size_t in_len,
+                               char *out, size_t *out_len) {
+    size_t i = 0;
+    size_t o = 0;
+    size_t cap = *out_len;
+    while (i < in_len) {
+        if (in[i] == '\r' && i + 1 < in_len && in[i + 1] == '\n') {
+            if (o + 4 > cap) {
+                return -1;
+            }
+            out[o++] = '\\';
+            out[o++] = 'r';
+            out[o++] = '\\';
+            out[o++] = 'n';
+            i += 2;
+        } else if (in[i] == '\n') {
+            if (o + 4 > cap) {
+                return -1;
+            }
+            // Lone LF (no preceding CR) — emit as \r\n anyway for
+            // consistency; browsers tolerate either inside JSON.
+            out[o++] = '\\';
+            out[o++] = 'r';
+            out[o++] = '\\';
+            out[o++] = 'n';
+            i += 1;
+        } else {
+            if (o + 1 > cap) {
+                return -1;
+            }
+            out[o++] = in[i++];
+        }
+    }
+    *out_len = o;
+    return 0;
+}
+
 static int signaling_lock(SignalingHandle sig, TickType_t wait_ticks) {
     if (NULL == sig || NULL == sig->ws_mutex) {
         return -1;
@@ -935,9 +990,9 @@ static void dispatch_text_frame(SignalingHandle sig, const uint8_t *msg, size_t 
     // Per-frame decoded type. SignalingTypeMessage_t: 0=UNKNOWN, 1=SDP_OFFER,
     // 2=SDP_ANSWER, 3=ICE_CANDIDATE, 4=GO_AWAY, 5=RECONNECT_ICE_SERVER,
     // 6=STATUS_RESPONSE.
-    printf("[sig]   type=%d sender=%.*s\n",
-           (int) recv.messageType,
-           (int) recv.senderClientIdLength, recv.pSenderClientId ? recv.pSenderClientId : "");
+    // printf("[sig]   type=%d sender=%.*s\n",
+    //        (int) recv.messageType,
+    //        (int) recv.senderClientIdLength, recv.pSenderClientId ? recv.pSenderClientId : "");
 
     if (SIGNALING_TYPE_MESSAGE_ICE_CANDIDATE == recv.messageType) {
         // D4b: decode base64 payload + JSON-parse + feed to ICE controller.
@@ -1091,8 +1146,8 @@ static void wslay_on_msg_recv_cb(wslay_event_context_ptr ctx,
 
     // One line per WS frame is useful flow tracing for Increment D bring-up
     // (ICE controller wiring). messageType is decoded in dispatch_text_frame.
-    printf("[sig] frame op=0x%x len=%u\n",
-           (unsigned) arg->opcode, (unsigned) arg->msg_length);
+    // printf("[sig] frame op=0x%x len=%u\n",
+    //        (unsigned) arg->opcode, (unsigned) arg->msg_length);
     dispatch_text_frame(sig, arg->msg, arg->msg_length);
 }
 
@@ -1497,8 +1552,6 @@ static void drain_outbox_locked(SignalingHandle sig) {
         if (0 != wrc) {
             printf("[signaling] wslay_event_queue_msg failed: %d (envelope %u bytes dropped)\n",
                    wrc, (unsigned) item.len);
-        } else {
-            printf("[signaling] drained: handed %u bytes to wslay\n", (unsigned) item.len);
         }
         free(item.envelope);
     }
@@ -1583,32 +1636,44 @@ int signaling_send_answer(SignalingHandle sig, const char *sdp_answer) {
     memcpy(peer_client_id, sig->peer_client_id, peer_client_id_len);
     peer_client_id[peer_client_id_len] = '\0';
 
-    printf("[signaling] send_answer: peer_client_id='%.*s' (len=%u)\n",
-           (int) peer_client_id_len, peer_client_id,
-           (unsigned) peer_client_id_len);
-    printf("[signaling] send_answer: starting (sdp_len=%u)\n", (unsigned) strlen(sdp_answer));
-
     size_t sdp_len = strlen(sdp_answer);
 
-    // Base64-encode the SDP. Output size is deterministic: ceil(n/3)*4, plus
-    // mbedTLS uses one extra byte for an internal null terminator in dlen.
-    size_t b64_cap = 4 * ((sdp_len + 2) / 3) + 1;
+    // Escape CRLF byte pairs to JSON `\r\n` escape sequences (4 bytes each)
+    // before encoding. See escape_sdp_newlines() rationale. Worst-case 2x
+    // growth, plus headroom for the wrapping JSON skeleton already in
+    // sdp_answer.
+    size_t escaped_cap = (sdp_len * 2U) + 16U;
+    char *escaped_buf = malloc(escaped_cap);
+    if (NULL == escaped_buf) {
+        printf("[signaling] OOM for escaped SDP buffer (%u bytes)\n", (unsigned) escaped_cap);
+        return -1;
+    }
+    size_t escaped_len = escaped_cap;
+    if (0 != escape_sdp_newlines(sdp_answer, sdp_len, escaped_buf, &escaped_len)) {
+        printf("[signaling] escape_sdp_newlines overflow (cap=%u)\n", (unsigned) escaped_cap);
+        free(escaped_buf);
+        return -1;
+    }
+
+    // Base64-encode the escaped SDP. Output size is deterministic:
+    // ceil(n/3)*4, plus mbedTLS uses one extra byte for an internal null
+    // terminator in dlen.
+    size_t b64_cap = 4 * ((escaped_len + 2) / 3) + 1;
     char *b64_buf = malloc(b64_cap);
     if (NULL == b64_buf) {
         printf("[signaling] OOM for base64 buffer (%u bytes)\n", (unsigned) b64_cap);
+        free(escaped_buf);
         return -1;
     }
     size_t b64_len = 0;
     int b64_rc = mbedtls_base64_encode((unsigned char *) b64_buf, b64_cap, &b64_len,
-                                       (const unsigned char *) sdp_answer, sdp_len);
+                                       (const unsigned char *) escaped_buf, escaped_len);
+    free(escaped_buf);
     if (0 != b64_rc) {
         printf("[signaling] base64 encode failed: -0x%04x\n", -b64_rc);
         free(b64_buf);
         return -1;
     }
-    printf("[signaling] send_answer b64_len=%u, first 64 chars: %.64s\n",
-           (unsigned) b64_len, b64_buf);
-
     // Wrap in the KVS WSS send envelope. JSON skeleton (action/keys/braces/
     // quotes/commas) is ~80 bytes; flat 256 leaves headroom for KVS docs drift.
     size_t env_cap = b64_len + peer_client_id_len + 256;
@@ -1635,9 +1700,6 @@ int signaling_send_answer(SignalingHandle sig, const char *sdp_answer) {
         free(env_buf);
         return -1;
     }
-    printf("[signaling] send_answer envelope (first 256 bytes): %.*s\n",
-           (int)(env_len < 256 ? env_len : 256), env_buf);
-
     // Hand the envelope off to the webrtc task via the outbox queue.
     // signaling_tick (sole owner of wslay state) will pick it up, call
     // wslay_event_queue_msg, and free env_buf. Producer side never touches
@@ -1751,6 +1813,5 @@ int signaling_send_ice_candidate(
         return -1;
     }
 
-    printf("[signaling] send_ice_candidate: queued (%u bytes), signaling_tick will drain it\n", (unsigned) env_len);
     return 0;
 }

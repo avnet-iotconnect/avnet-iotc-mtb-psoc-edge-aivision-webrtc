@@ -35,8 +35,10 @@
 #define APP_WEBRTC_TRANSCEIVER_STREAM_ID "myKvsVideoStream"
 #define APP_WEBRTC_TRANSCEIVER_VIDEO_TRACK_ID "myVideoTrack"
 #define APP_WEBRTC_TRANSCEIVER_VIDEO_MID "0"
+#define APP_WEBRTC_TRANSCEIVER_AUDIO_TRACK_ID "myAudioTrack"
 #define APP_WEBRTC_TRANSCEIVER_ROLLING_BUFFER_SEC 3U
 #define APP_WEBRTC_TRANSCEIVER_H264_BITRATE_BPS (1400U * 1024U)
+#define APP_WEBRTC_TRANSCEIVER_OPUS_BITRATE_BPS  (64U * 1024U)
 
 #define WEBRTC_TASK_NAME "webrtc"
 #define WEBRTC_TASK_STACK_W (110U * 1024U)
@@ -185,6 +187,35 @@ static void init_video_transceiver(Transceiver_t *out_transceiver) {
     out_transceiver->trackIdLength = sizeof(APP_WEBRTC_TRANSCEIVER_VIDEO_TRACK_ID) - 1U;
 }
 
+// Placeholder audio transceiver — required by browsers that offer
+// video + audio in the same SDP (Chrome's default). Upstream's
+// PopulateMediaDescriptions only emits answer m-sections for matched
+// transceivers, so without an audio transceiver the answer would have
+// only m=video while a=group:BUNDLE still references mid:1. Chrome then
+// silently rejects the answer (RFC 3264 §6 m-section count mismatch),
+// staying in have-local-offer. N6's reference port works around this the
+// same way: phantom audio transceiver, Opus, never actually streams data.
+static void init_audio_transceiver(Transceiver_t *out_transceiver) {
+    memset(out_transceiver, 0, sizeof(*out_transceiver));
+    out_transceiver->trackKind = TRANSCEIVER_TRACK_KIND_AUDIO;
+    out_transceiver->direction = TRANSCEIVER_TRACK_DIRECTION_SENDRECV;
+    TRANSCEIVER_ENABLE_CODEC(out_transceiver->codecBitMap, TRANSCEIVER_RTC_CODEC_OPUS_BIT);
+    out_transceiver->rollingbufferDurationSec = APP_WEBRTC_TRANSCEIVER_ROLLING_BUFFER_SEC;
+    out_transceiver->rollingbufferBitRate = APP_WEBRTC_TRANSCEIVER_OPUS_BITRATE_BPS;
+    memcpy(
+        out_transceiver->streamId,
+        APP_WEBRTC_TRANSCEIVER_STREAM_ID,
+        sizeof(APP_WEBRTC_TRANSCEIVER_STREAM_ID)
+    );
+    out_transceiver->streamIdLength = sizeof(APP_WEBRTC_TRANSCEIVER_STREAM_ID) - 1U;
+    memcpy(
+        out_transceiver->trackId,
+        APP_WEBRTC_TRANSCEIVER_AUDIO_TRACK_ID,
+        sizeof(APP_WEBRTC_TRANSCEIVER_AUDIO_TRACK_ID)
+    );
+    out_transceiver->trackIdLength = sizeof(APP_WEBRTC_TRANSCEIVER_AUDIO_TRACK_ID) - 1U;
+}
+
 static const char *local_candidate_type_string(IceCandidateType_t candidate_type) {
     switch (candidate_type) {
         case ICE_CANDIDATE_TYPE_HOST:
@@ -296,12 +327,13 @@ static int run_session(void) {
     char wss_endpoint[APP_WEBRTC_WSS_ENDPOINT_LEN];
     AwsCreds aws_creds;
     PeerConnectionSession_t session = {0};
-    // Transceiver must outlive the PeerConnection it's added to:
+    // Transceivers must outlive the PeerConnection they're added to:
     // PeerConnection_AddTransceiver (peer_connection.c AllocateTransceiver
     // ~line 1388) stores the raw pointer in pSession->pTransceivers[], not
     // a copy. SetPayloadType later dereferences ->codecBitMap and
     // ->trackKind, so the storage has to be live for the whole session.
     Transceiver_t video_transceiver;
+    Transceiver_t audio_transceiver;  // placeholder; see init_audio_transceiver
     SignalingHandle sig = NULL;
     AppWebrtcSignalingBridge_t signaling_bridge = {
         .sig = NULL,
@@ -356,7 +388,12 @@ static int run_session(void) {
 
         init_video_transceiver(&video_transceiver);
         if (PEER_CONNECTION_RESULT_OK != PeerConnection_AddTransceiver(&session, &video_transceiver)) {
-            printf("[webrtc] PeerConnection_AddTransceiver failed\n");
+            printf("[webrtc] PeerConnection_AddTransceiver(video) failed\n");
+            goto cleanup;
+        }
+        init_audio_transceiver(&audio_transceiver);
+        if (PEER_CONNECTION_RESULT_OK != PeerConnection_AddTransceiver(&session, &audio_transceiver)) {
+            printf("[webrtc] PeerConnection_AddTransceiver(audio) failed\n");
             goto cleanup;
         }
         if (PEER_CONNECTION_RESULT_OK != PeerConnection_SetOnLocalCandidateReady(&session, on_local_candidate_ready, &signaling_bridge)) {
