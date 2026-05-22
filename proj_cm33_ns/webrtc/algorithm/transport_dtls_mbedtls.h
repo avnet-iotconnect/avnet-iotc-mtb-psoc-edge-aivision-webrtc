@@ -18,6 +18,7 @@
 #define TRANSPORT_DTLS_MBEDTLS_H
 
 /* fork-aivision: mbedTLS 3.x renamed the public config entrypoint. */
+#include "FreeRTOS.h"
 #include "mbedtls/build_info.h"
 #include "mbedtls/ctr_drbg.h"
 #include "mbedtls/entropy.h"
@@ -25,7 +26,6 @@
 #include "mbedtls/ssl.h"
 #include "mbedtls/threading.h"
 #include "mbedtls/x509.h"
-#include "mbedtls/timing.h"
 
 #ifndef ARRAY_SIZE
 #define ARRAY_SIZE( array ) ( sizeof( array ) / sizeof *( array ) )
@@ -116,18 +116,11 @@ typedef struct DtlsSSLContext
     mbedtls_ctr_drbg_context ctrDrbgContext; /**< @brief CTR DRBG context for random number generation. */
 } DtlsSSLContext_t;
 
-typedef void (* mbedtls_set_delay_fptr)( void *,
-                                         uint32_t,
-                                         uint32_t );
-typedef int (* mbedtls_get_delay_fptr)( void * );
-
 typedef struct DtlsSessionTimer
 {
-    uint32_t int_ms;                  // Intermediate delay in milliseconds
-    uint32_t fin_ms;                  // Final delay in milliseconds
-    int64_t start_ticks;              // Start tick count
-    mbedtls_set_delay_fptr set_delay; // Function pointer to set delay
-    mbedtls_get_delay_fptr get_delay; // Function pointer to get delay
+    uint32_t int_ms;                  /* Intermediate delay in milliseconds (0 = unset/cancelled). */
+    uint32_t fin_ms;                  /* Final delay in milliseconds (0 = cancelled per mbedTLS contract). */
+    uint32_t start_ticks;             /* FreeRTOS tick count when the timer was armed. */
 } DtlsSessionTimer_t;
 
 typedef struct DtlsRetransmissionParams
@@ -144,7 +137,7 @@ typedef struct DtlsRetransmissionParams
 typedef struct DtlsTransportParams
 {
     DtlsSSLContext_t dtlsSslContext;
-    mbedtls_timing_delay_context mbedtlsTimer;
+    DtlsSessionTimer_t mbedtlsTimer;
     OnTransportDtlsSendHook_t onDtlsSendHook;
     void * pOnDtlsSendCustomContext;
 

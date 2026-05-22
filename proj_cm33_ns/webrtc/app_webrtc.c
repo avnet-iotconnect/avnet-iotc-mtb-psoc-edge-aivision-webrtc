@@ -25,6 +25,7 @@
 #include "ice_controller.h"
 #include "peer_connection.h"
 #include "signaling.h"
+#include "srtp.h"
 #include "stun_data_types.h"
 #include "transceiver_data_types.h"
 
@@ -48,21 +49,9 @@
 #define APP_WEBRTC_BACKOFF_MS 1000U
 #define APP_WEBRTC_LOCAL_CANDIDATE_BUF_LEN 192U
 
-// File-scope state is deliberately minimal — only what truly outlives a
-// session or crosses task boundaries lives here. Everything per-session
-// (PC session struct, signaling handle, WSS endpoint, SDP buffers) is local
-// to run_session.
-//
-// Streaming semantics: app_webrtc_start sets s_streaming_requested = true,
-// app_webrtc_stop clears it. The media pump loop in run_session observes the
-// flag and exits broadcasting when it goes false; the surrounding session
-// then tears down normally. We never interrupt mid-setup or mid-negotiation —
-// "stop" is honored only at the next loop tick. If stop arrives before the
-// offer, the session keeps waiting until the offer arrives or the network
-// drops.
-static TaskHandle_t s_webrtc_task = NULL;             // task handle, process-lifetime
-static volatile bool s_streaming_requested = false;     // start/stop signal: should we be running the task?
-static volatile bool s_creds_dirty = false;           // refresh hook → session boundary
+static TaskHandle_t s_webrtc_task = NULL;
+static volatile bool s_streaming_requested = false;
+static volatile bool s_creds_dirty = false;
 
 typedef struct AppWebrtcSignalingBridge {
     SignalingHandle sig;
@@ -70,8 +59,6 @@ typedef struct AppWebrtcSignalingBridge {
     int sdp_m_line_index;
 } AppWebrtcSignalingBridge_t;
 
-// Pull the cached IoTC-discovered AWS triplet and channel ARN into our local
-// view. The strings stay owned by the SDK cache.
 static int populate_creds(AwsCreds *out, char *region_buf, size_t region_buf_size) {
     const IotclDraCredentialsResult *creds = iotconnect_sdk_aws_creds_get();
     if (NULL == creds) {
@@ -126,9 +113,6 @@ static int populate_creds(AwsCreds *out, char *region_buf, size_t region_buf_siz
     return 0;
 }
 
-// Build the SigV4-signed WSS URL and open the signaling websocket. The signed
-// URL is variable-length so it lives on the heap, owned by this function and
-// freed before return. Caller never sees the buffer.
 static int signaling_open_session(
     const AwsCreds *creds,
     const char *wss_endpoint,
@@ -187,14 +171,10 @@ static void init_video_transceiver(Transceiver_t *out_transceiver) {
     out_transceiver->trackIdLength = sizeof(APP_WEBRTC_TRANSCEIVER_VIDEO_TRACK_ID) - 1U;
 }
 
-// Placeholder audio transceiver — required by browsers that offer
-// video + audio in the same SDP (Chrome's default). Upstream's
-// PopulateMediaDescriptions only emits answer m-sections for matched
-// transceivers, so without an audio transceiver the answer would have
-// only m=video while a=group:BUNDLE still references mid:1. Chrome then
-// silently rejects the answer (RFC 3264 §6 m-section count mismatch),
-// staying in have-local-offer. N6's reference port works around this the
-// same way: phantom audio transceiver, Opus, never actually streams data.
+/* Phantom audio transceiver: browsers that offer video+audio (Chrome default)
+ * need an m=audio in the answer or BUNDLE goes mismatched and Chrome silently
+ * rejects. Upstream's PopulateMediaDescriptions only emits answer m-sections
+ * for matched transceivers, so we add this Opus placeholder that never streams. */
 static void init_audio_transceiver(Transceiver_t *out_transceiver) {
     memset(out_transceiver, 0, sizeof(*out_transceiver));
     out_transceiver->trackKind = TRANSCEIVER_TRACK_KIND_AUDIO;
@@ -275,9 +255,6 @@ static int serialize_local_candidate(
 
     candidate_type = local_candidate_type_string(candidate->candidateType);
 
-    // fork-aivision: current S7 flow advertises one sendonly video m-line and
-    // only enables UDP host candidates in pc_config, so a single fixed
-    // component/protocol candidate string is sufficient for trickle signaling.
     int candidate_len = snprintf(
         candidate_buf,
         candidate_buf_len,
@@ -320,20 +297,15 @@ static void on_local_candidate_ready(void *context, PeerConnectionIceLocalCandid
 }
 
 static int run_session(void) {
-    // Per-session locals. Everything lives in this stack frame; nothing
-    // survives when the function returns. The PeerConnection struct in
-    // particular leaves BSS — it's reclaimed between sessions.
     char region_buf[APP_WEBRTC_AWS_REGION_MAXLEN + 1U];
     char wss_endpoint[APP_WEBRTC_WSS_ENDPOINT_LEN];
     AwsCreds aws_creds;
     PeerConnectionSession_t session = {0};
-    // Transceivers must outlive the PeerConnection they're added to:
-    // PeerConnection_AddTransceiver (peer_connection.c AllocateTransceiver
-    // ~line 1388) stores the raw pointer in pSession->pTransceivers[], not
-    // a copy. SetPayloadType later dereferences ->codecBitMap and
-    // ->trackKind, so the storage has to be live for the whole session.
+    /* Transceivers must outlive the PeerConnection they're added to:
+     * PeerConnection_AddTransceiver stores raw pointers, not copies, and
+     * SetPayloadType later dereferences ->codecBitMap and ->trackKind. */
     Transceiver_t video_transceiver;
-    Transceiver_t audio_transceiver;  // placeholder; see init_audio_transceiver
+    Transceiver_t audio_transceiver;
     SignalingHandle sig = NULL;
     AppWebrtcSignalingBridge_t signaling_bridge = {
         .sig = NULL,
@@ -343,10 +315,6 @@ static int run_session(void) {
     bool peer_connection_inited = false;
     int rc = -1;
 
-    // Phase: fetch fresh creds and resolve the WSS endpoint. Creds live in
-    // the IoTC SDK cache; we read pointers into it (refresh hook flips
-    // s_creds_dirty when the SDK rotates them — already observed at the
-    // session boundary in webrtc_task).
     if (0 != populate_creds(&aws_creds, region_buf, sizeof(region_buf))) {
         return -1;
     }
@@ -359,10 +327,6 @@ static int run_session(void) {
         goto cleanup;
     }
 
-    // Phase: peer connection init + start ICE gathering. UDP host socket opens
-    // inside the ICE controller during PeerConnection_Start; the first local
-    // candidate fires `on_local_candidate_ready` against `signaling_bridge`,
-    // which lives at function scope so it outlives the peer connection.
     {
         PeerConnectionSessionConfiguration_t pc_config;
         memset(&pc_config, 0, sizeof(pc_config));
@@ -408,13 +372,10 @@ static int run_session(void) {
     signaling_bridge.sig = sig;
     signaling_set_peer_connection(sig, &session);
 
-    // Phase: SDP offer/answer. Canonical upstream flow:
-    //   SetRemoteDescription → CreateAnswer → SetLocalDescription → send.
-    // SetRemoteDescription copies the offer into session->remoteSdpBuffer
-    // (peer_connection.c ~line 1791), inits DTLS, and starts the ICE
-    // controller, so offer_sdp can drop out of scope before CreateAnswer.
     {
-        char offer_sdp[APP_WEBRTC_SDP_BUF_LEN]; // 12 KB
+        /* SetRemoteDescription copies the offer into session->remoteSdpBuffer,
+         * so offer_sdp can drop out of scope after the call returns. */
+        char offer_sdp[APP_WEBRTC_SDP_BUF_LEN];
         size_t offer_len = 0;
         PeerConnectionBufferSessionDescription_t remote_desc;
 
@@ -433,11 +394,11 @@ static int run_session(void) {
             printf("[webrtc] PeerConnection_SetRemoteDescription failed\n");
             goto cleanup;
         }
-    } // offer_sdp dies here (~12 KB freed); offer now lives in session->remoteSdpBuffer
+    }
 
     {
-        char local_desc_buffer[PEER_CONNECTION_SDP_DESCRIPTION_BUFFER_MAX_LENGTH];  // 10 KB
-        char answer_buffer[PEER_CONNECTION_SDP_DESCRIPTION_BUFFER_MAX_LENGTH + 1U]; // 10 KB
+        char local_desc_buffer[PEER_CONNECTION_SDP_DESCRIPTION_BUFFER_MAX_LENGTH];
+        char answer_buffer[PEER_CONNECTION_SDP_DESCRIPTION_BUFFER_MAX_LENGTH + 1U];
         PeerConnectionBufferSessionDescription_t answer_desc;
         size_t answer_len = PEER_CONNECTION_SDP_DESCRIPTION_BUFFER_MAX_LENGTH;
 
@@ -462,19 +423,15 @@ static int run_session(void) {
             goto cleanup;
         }
         printf("[webrtc] answer queued (%d bytes)\n", (int) answer_len);
-    } // local_desc_buffer + answer_buffer die here (~20 KB freed)
+    }
 
-    // Phase: media + signaling pump. No SDP-sized buffers from here on. ICE
-    // checks → DTLS handshake → SRTP keying run inside PeerConnection's
-    // internal tasks. The app task only keeps signaling alive (trickle ICE)
-    // and — once S10 lands — feeds H.264 NALs into PeerConnection_WriteFrame.
     printf("[webrtc] entering media/signaling pump\n");
     while (s_streaming_requested) {
         if (0 != signaling_tick(sig)) {
             printf("[webrtc] signaling_tick reported disconnect\n");
             break;
         }
-        // S10 stub: drain_media_ring_step(&session);  // M2 shmem → PeerConnection_WriteFrame
+        /* TODO: drain M2 shmem ring → PeerConnection_WriteFrame. */
         vTaskDelay(pdMS_TO_TICKS(APP_WEBRTC_POLL_IDLE_MS));
     }
     rc = 0;
@@ -496,11 +453,15 @@ cleanup:
 static void webrtc_task(void *arg) {
     (void) arg;
 
-    // One-shot crypto init. Retry with backoff if the entropy source isn't
-    // ready yet — eventually succeeds, then we drop into the session loop.
     while (0 != webrtc_csprng_init()) {
         printf("[webrtc] csprng init failed, retrying\n");
         vTaskDelay(pdMS_TO_TICKS(APP_WEBRTC_BACKOFF_MS));
+    }
+
+    /* Required before any srtp_create; otherwise srtp_err_status_init_fail. */
+    srtp_err_status_t srtp_rc = srtp_init();
+    if (srtp_err_status_ok != srtp_rc) {
+        printf("[webrtc] srtp_init failed: %d (continuing; sessions will fail)\n", (int) srtp_rc);
     }
 
     for (;;) {
@@ -543,9 +504,6 @@ void app_webrtc_init(void) {
     }
 }
 
-// Enable broadcasting. Pure signal: flip the flag and return. Creds/endpoint
-// validation lives in run_session, where transient failures roll into the
-// retry loop.
 bool app_webrtc_start(void) {
     if (NULL == s_webrtc_task) {
         printf("[webrtc] start before init\n");
@@ -556,9 +514,6 @@ bool app_webrtc_start(void) {
     return true;
 }
 
-// Disable broadcasting. The media pump loop in run_session observes
-// s_streaming_requested and exits when it goes false; session cleanup proceeds
-// normally afterward. No mid-setup interruption — honored on next loop tick.
 void app_webrtc_stop(void) {
     s_streaming_requested = false;
     vTaskDelay(pdMS_TO_TICKS(APP_WEBRTC_POLL_IDLE_MS * 2U));

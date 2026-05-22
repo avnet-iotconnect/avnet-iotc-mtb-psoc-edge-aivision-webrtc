@@ -861,6 +861,10 @@ static int32_t ExecuteDtlsHandshake( PeerConnectionSession_t * pSession )
     {
         pDtlsSession = &pSession->dtlsSession;
 
+        /* Heap snapshot at each handshake entry — DTLS RAM headroom probe. */
+        extern void memory_test( void );
+        memory_test();
+
         /* Trigger the DTLS handshaking to send client hello if necessary. */
         xNetworkStatus = DTLS_ExecuteHandshake( &pDtlsSession->xNetworkContext );
 

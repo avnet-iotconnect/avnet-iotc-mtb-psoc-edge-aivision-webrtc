@@ -514,7 +514,9 @@ void PeerConnectionJitterBuffer_Free( PeerConnectionJitterBuffer_t * pJitterBuff
     }
     else if( pJitterBuffer->isInit == 0U )
     {
-        LogError( ( "Jitter buffer is not initialized yet." ) );
+        /* Free of a never-initialized (or already-freed) buffer is a benign
+         * no-op — receivers are torn down in master-role sessions that never
+         * had remote tracks. */
         ret = PEER_CONNECTION_RESULT_BAD_PARAMETER;
     }
     else
