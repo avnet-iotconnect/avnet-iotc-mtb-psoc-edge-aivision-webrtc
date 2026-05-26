@@ -111,7 +111,8 @@ CY_IGNORE+=$(THIRD_PARTY_DIR)/amazon-kinesis-video-streams-rtcp/rtcpFilePaths.cm
 # -----------------------------------------------------------------------------
 # amazon-kinesis-video-streams-sdp
 # -----------------------------------------------------------------------------
-SOURCES+=$(wildcard $(THIRD_PARTY_DIR)/amazon-kinesis-video-streams-sdp/source/*.c)
+# ultimately no sources other than the patches/ dir. Using just includes and repo reference
+# SOURCES+=$(wildcard $(THIRD_PARTY_DIR)/amazon-kinesis-video-streams-sdp/source/*.c)
 INCLUDES+=$(THIRD_PARTY_DIR)/amazon-kinesis-video-streams-sdp/source/include
 CY_IGNORE+=$(THIRD_PARTY_DIR)/amazon-kinesis-video-streams-sdp/test
 CY_IGNORE+=$(THIRD_PARTY_DIR)/amazon-kinesis-video-streams-sdp/CMakeLists.txt
