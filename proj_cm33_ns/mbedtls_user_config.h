@@ -1009,15 +1009,11 @@
 #include "mbedtls_alt_config.h"
 
 
-// Nik: Rough min values based on testing with MQTT. May change for mTLS + HTTP
-// Nik: We have a ton of ram now .. Temp adjust to check.
-
-// TODO: adjust  if pilot success
+// These are tuned minimum values for context sizes that do not cause problems:
 #undef MBEDTLS_SSL_IN_CONTENT_LEN
-#define MBEDTLS_SSL_IN_CONTENT_LEN (16 * 1024)
-
+#define MBEDTLS_SSL_IN_CONTENT_LEN (10 * 1024)
 #undef MBEDTLS_SSL_OUT_CONTENT_LEN
-#define MBEDTLS_SSL_OUT_CONTENT_LEN (8 * 1024)
+#define MBEDTLS_SSL_OUT_CONTENT_LEN (6 * 1024)
 
 
 /**
