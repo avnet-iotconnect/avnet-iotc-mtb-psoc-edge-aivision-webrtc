@@ -39,7 +39,7 @@
 #define APP_TASK_H_
 
 #define APP_TASK_PRIORITY       (2)
-#define APP_TASK_STACK_SIZE     (1024 * 8)
+#define APP_TASK_STACK_SIZE     (1024 * 3)
 
 void app_task(void *pvParameters);
 
