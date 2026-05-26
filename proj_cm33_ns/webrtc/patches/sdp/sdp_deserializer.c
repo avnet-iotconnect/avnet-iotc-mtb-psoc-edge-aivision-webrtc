@@ -1,0 +1,598 @@
+/* Standard includes. */
+#include <stdio.h>
+#include <string.h>
+#include <stdint.h>
+
+/* Interface includes. */
+#include "sdp_deserializer.h"
+
+/* fork-aivision: newlib-nano on PSE84 omits %llu/%lld from printf/scanf.
+ * Hand-roll uint64 decimal parse. Mirrors sscanf("%llu") semantics: parses
+ * leading digits, stops at first non-digit (no NUL required), returns
+ * count of fields converted (0 or 1). */
+static int dec_to_u64( const char * s, size_t maxLen, uint64_t * out )
+{
+    uint64_t v = 0U;
+    size_t i = 0;
+    if( ( s == NULL ) || ( out == NULL ) || ( maxLen == 0U ) ||
+        ( s[ 0 ] < '0' ) || ( s[ 0 ] > '9' ) )
+    {
+        return 0;
+    }
+    while( ( i < maxLen ) && ( s[ i ] >= '0' ) && ( s[ i ] <= '9' ) )
+    {
+        v = ( v * 10U ) + ( uint64_t ) ( s[ i ] - '0' );
+        i++;
+    }
+    *out = v;
+    return 1;
+}
+
+SdpResult_t SdpDeserializer_Init( SdpDeserializerContext_t * pCtx,
+                                  const char * pSdpMessage,
+                                  size_t sdpMessageLength )
+{
+    SdpResult_t result = SDP_RESULT_OK;
+
+    if( ( pCtx == NULL ) ||
+        ( pSdpMessage == NULL ) ||
+        ( sdpMessageLength == 0 ) )
+    {
+        result = SDP_RESULT_BAD_PARAM;
+    }
+
+    if( result == SDP_RESULT_OK )
+    {
+        pCtx->pStart = pSdpMessage;
+        pCtx->totalLength = sdpMessageLength;
+        pCtx->currentIndex = 0;
+    }
+
+    return result;
+}
+/*-----------------------------------------------------------*/
+
+SdpResult_t SdpDeserializer_GetNext( SdpDeserializerContext_t * pCtx,
+                                     uint8_t * pType,
+                                     const char ** pValue,
+                                     size_t * pValueLength )
+{
+    size_t i, remainingLength, valueLength;
+    SdpResult_t result = SDP_RESULT_OK;
+
+    if( ( pCtx == NULL ) ||
+        ( pType == NULL ) ||
+        ( pValue == NULL ) ||
+        ( pValueLength == NULL ) )
+    {
+        result = SDP_RESULT_BAD_PARAM;
+    }
+
+    if( result == SDP_RESULT_OK )
+    {
+        if( pCtx->currentIndex == pCtx->totalLength )
+        {
+            result = SDP_RESULT_MESSAGE_END;
+        }
+    }
+
+    if( result == SDP_RESULT_OK )
+    {
+        remainingLength = pCtx->totalLength - pCtx->currentIndex;
+
+        if( remainingLength < 3 )
+        {
+            result = SDP_RESULT_MESSAGE_MALFORMED_NOT_ENOUGH_INFO;
+        }
+    }
+
+    if( result == SDP_RESULT_OK )
+    {
+        if( pCtx->pStart[ pCtx->currentIndex + 1 ] != '=' )
+        {
+            result = SDP_RESULT_MESSAGE_MALFORMED_EQUAL_NOT_FOUND;
+        }
+    }
+
+    if( result == SDP_RESULT_OK )
+    {
+        for( i = pCtx->currentIndex + 2; i < pCtx->totalLength; i++ )
+        {
+            if( ( pCtx->pStart[ i ] == '\n' ) ||
+                ( pCtx->pStart[ i ] == '\r' ) )
+            {
+                break;
+            }
+        }
+
+        if( i == pCtx->totalLength )
+        {
+            /* No '\n' or '\r' found. */
+            result = SDP_RESULT_MESSAGE_MALFORMED_NEWLINE_NOT_FOUND;
+        }
+
+        if( result == SDP_RESULT_OK )
+        {
+            valueLength = i - pCtx->currentIndex - 2;
+
+            if( valueLength > 0 )
+            {
+                *pType = pCtx->pStart[ pCtx->currentIndex ];
+                *pValue = &( pCtx->pStart[ pCtx->currentIndex + 2 ] );
+                *pValueLength = valueLength;
+
+                if( ( pCtx->pStart[ i ] == '\r' ) &&
+                    ( ( i + 1 ) < pCtx->totalLength ) &&
+                    ( pCtx->pStart[ i + 1 ] == '\n' ) )
+                {
+                    /* Skip \r\n. */
+                    pCtx->currentIndex = i + 2;
+                }
+                else
+                {
+                    /* Skip \r or \n. */
+                    pCtx->currentIndex = i + 1;
+                }
+            }
+            else
+            {
+                result = SDP_RESULT_MESSAGE_MALFORMED_NO_VALUE;
+            }
+        }
+    }
+
+    return result;
+}
+/*-----------------------------------------------------------*/
+
+SdpResult_t SdpDeserializer_ParseOriginator( const char * pValue,
+                                             size_t valueLength,
+                                             SdpOriginator_t * pOriginator )
+{
+    SdpResult_t result = SDP_RESULT_OK;
+    size_t i, start = 0, numSpaces = 0;
+    int sscanfRetVal;
+
+    /* Input check. */
+    if( ( pValue == NULL ) ||
+        ( pOriginator == NULL ) )
+    {
+        result = SDP_RESULT_BAD_PARAM;
+    }
+
+    if( result == SDP_RESULT_OK )
+    {
+        for( i = 0; i < valueLength; i++ )
+        {
+            if( pValue[ i ] == ' ' )
+            {
+                numSpaces += 1;
+
+                if( numSpaces == 1 )
+                {
+                    pOriginator->pUserName = &( pValue[ start ] );
+                    pOriginator->userNameLength = i - start;
+                }
+                else if( numSpaces == 2 )
+                {
+                    sscanfRetVal = dec_to_u64( &( pValue[ start ] ),
+                                               i - start,
+                                               &( pOriginator->sessionId ) );
+
+                    if( sscanfRetVal != 1 )
+                    {
+                        result = SDP_RESULT_MESSAGE_MALFORMED_NO_SESSION_ID;
+                        break;
+                    }
+                }
+                else /* numSpaces == 3 */
+                {
+                    sscanfRetVal = dec_to_u64( &( pValue[ start ] ),
+                                               i - start,
+                                               &( pOriginator->sessionVersion ) );
+
+                    if( sscanfRetVal != 1 )
+                    {
+                        result = SDP_RESULT_MESSAGE_MALFORMED_NO_SESSION_VERSION;
+                    }
+                    else
+                    {
+                        start = i + 1;
+                    }
+                    /* break to parse connection info inside of originator. */
+                    break;
+                }
+
+                start = i + 1;
+            }
+        }
+    }
+
+    if( result == SDP_RESULT_OK )
+    {
+        if( i < valueLength )
+        {
+            /* Originator part is parsed, continue to parse connection info. */
+            result = SdpDeserializer_ParseConnectionInfo( &( pValue[ start ] ),
+                                                          valueLength - start,
+                                                          &( pOriginator->connectionInfo ) );
+        }
+        else
+        {
+            result = SDP_RESULT_MESSAGE_MALFORMED_NOT_ENOUGH_INFO;
+        }
+    }
+
+    return result;
+}
+/*-----------------------------------------------------------*/
+
+SdpResult_t SdpDeserializer_ParseConnectionInfo( const char * pValue,
+                                                 size_t valueLength,
+                                                 SdpConnectionInfo_t * pConnInfo )
+{
+    SdpResult_t result = SDP_RESULT_OK;
+    size_t i, start = 0, numSpaces = 0;
+
+    /* Input check. */
+    if( ( pValue == NULL ) ||
+        ( pConnInfo == NULL ) )
+    {
+        result = SDP_RESULT_BAD_PARAM;
+    }
+
+    if( result == SDP_RESULT_OK )
+    {
+        for( i = 0; i < valueLength; i++ )
+        {
+            if( pValue[ i ] == ' ' )
+            {
+                numSpaces += 1;
+
+                if( numSpaces == 1 )
+                {
+                    if( ( i - start ) == 2 )
+                    {
+                        if( strncmp( &( pValue[ start ] ), "IN", 2 ) == 0 )
+                        {
+                            pConnInfo->networkType = SDP_NETWORK_IN;
+                        }
+                        else
+                        {
+                            result = SDP_RESULT_MESSAGE_MALFORMED_INVALID_NETWORK_TYPE;
+                            break;
+                        }
+                    }
+                    else
+                    {
+                        result = SDP_RESULT_MESSAGE_MALFORMED_INVALID_NETWORK_TYPE;
+                        break;
+                    }
+                }
+                else if( numSpaces == 2 )
+                {
+                    if( ( i - start ) == 3 )
+                    {
+                        if( strncmp( &( pValue[ start ] ), "IP4", 3 ) == 0 )
+                        {
+                            pConnInfo->addressType = SDP_ADDRESS_IPV4;
+                        }
+                        else if( strncmp( &( pValue[ start ] ), "IP6", 3 ) == 0 )
+                        {
+                            pConnInfo->addressType = SDP_ADDRESS_IPV6;
+                        }
+                        else
+                        {
+                            result = SDP_RESULT_MESSAGE_MALFORMED_INVALID_ADDRESS_TYPE;
+                            break;
+                        }
+                    }
+                    else
+                    {
+                        result = SDP_RESULT_MESSAGE_MALFORMED_INVALID_ADDRESS_TYPE;
+                        break;
+                    }
+                }
+                else
+                {
+                    result = SDP_RESULT_MESSAGE_MALFORMED_REDUNDANT_INFO;
+                    break;
+                }
+
+                start = i + 1;
+            }
+        }
+    }
+
+    if( result == SDP_RESULT_OK )
+    {
+        if( numSpaces == 2 )
+        {
+            pConnInfo->pAddress = &( pValue[ start ] );
+            pConnInfo->addressLength = i - start;
+        }
+        else
+        {
+            result = SDP_RESULT_MESSAGE_MALFORMED_NOT_ENOUGH_INFO;
+        }
+    }
+
+    return result;
+}
+/*-----------------------------------------------------------*/
+
+SdpResult_t SdpDeserializer_ParseBandwidthInfo( const char * pValue,
+                                                size_t valueLength,
+                                                SdpBandwidthInfo_t * pBandwidthInfo )
+{
+    SdpResult_t result = SDP_RESULT_OK;
+    size_t i, numColon = 0;
+    int sscanfRetVal = 0;
+
+    /* Input check. */
+    if( ( pValue == NULL ) ||
+        ( pBandwidthInfo == NULL ) )
+    {
+        result = SDP_RESULT_BAD_PARAM;
+    }
+
+    if( result == SDP_RESULT_OK )
+    {
+        for( i = 0; i < valueLength; i++ )
+        {
+            if( pValue[ i ] == ':' )
+            {
+                numColon += 1;
+
+                if( i == 0 )
+                {
+                    result = SDP_RESULT_MESSAGE_MALFORMED_NOT_ENOUGH_INFO;
+                    break;
+                }
+
+                pBandwidthInfo->pBwType = &( pValue[ 0 ] );
+                pBandwidthInfo->bwTypeLength = i;
+
+                if( ( i + 1 ) < valueLength )
+                {
+                    sscanfRetVal = dec_to_u64( &( pValue[ i + 1 ] ),
+                                               valueLength - ( i + 1 ),
+                                               &( pBandwidthInfo->sdpBandwidthValue ) );
+
+                    if( sscanfRetVal != 1 )
+                    {
+                        result = SDP_RESULT_MESSAGE_MALFORMED_INVALID_BANDWIDTH;
+                    }
+                }
+                else
+                {
+                    result = SDP_RESULT_MESSAGE_MALFORMED;
+                }
+
+                break;
+            }
+        }
+
+        if( numColon == 0 )
+        {
+            result = SDP_RESULT_MESSAGE_MALFORMED_NOT_ENOUGH_INFO;
+        }
+    }
+
+    return result;
+}
+/*-----------------------------------------------------------*/
+
+SdpResult_t SdpDeserializer_ParseTimeActive( const char * pValue,
+                                             size_t valueLength,
+                                             SdpTimeDescription_t * pTimeDescription )
+{
+    SdpResult_t result = SDP_RESULT_OK;
+    size_t i, numSpaces = 0;
+    int sscanfRetVal = 0;
+
+    /* Input check. */
+    if( ( pValue == NULL ) ||
+        ( pTimeDescription == NULL ) )
+    {
+        result = SDP_RESULT_BAD_PARAM;
+    }
+
+    if( result == SDP_RESULT_OK )
+    {
+        for( i = 0; i < valueLength; i++ )
+        {
+            if( pValue[ i ] == ' ' )
+            {
+                numSpaces += 1;
+
+                /* Parse start-time. */
+                sscanfRetVal = dec_to_u64( &( pValue[ 0 ] ),
+                                           i,
+                                           &( pTimeDescription->startTime ) );
+
+                if( sscanfRetVal != 1 )
+                {
+                    result = SDP_RESULT_MESSAGE_MALFORMED_INVALID_START_TIME;
+                    break;
+                }
+
+                /* Parse stop-time. */
+                if( ( i + 1 ) < valueLength )
+                {
+                    sscanfRetVal = dec_to_u64( &( pValue[ i + 1 ] ),
+                                               valueLength - ( i + 1 ),
+                                               &( pTimeDescription->stopTime ) );
+
+                    if( sscanfRetVal != 1 )
+                    {
+                        result = SDP_RESULT_MESSAGE_MALFORMED_INVALID_STOP_TIME;
+                    }
+                }
+                else
+                {
+                    result = SDP_RESULT_MESSAGE_MALFORMED;
+                }
+
+                break;
+            }
+        }
+
+        if( numSpaces == 0 )
+        {
+            result = SDP_RESULT_MESSAGE_MALFORMED_NOT_ENOUGH_INFO;
+        }
+    }
+
+    return result;
+}
+/*-----------------------------------------------------------*/
+
+SdpResult_t SdpDeserializer_ParseAttribute( const char * pValue,
+                                            size_t valueLength,
+                                            SdpAttribute_t * pAttribute )
+{
+    SdpResult_t result = SDP_RESULT_OK;
+    size_t i;
+
+    /* Input check. */
+    if( ( pValue == NULL ) ||
+        ( pAttribute == NULL ) ||
+        ( valueLength == 0 ) )
+    {
+        result = SDP_RESULT_BAD_PARAM;
+    }
+
+    if( result == SDP_RESULT_OK )
+    {
+        for( i = 0; i < valueLength; i++ )
+        {
+            if( pValue[ i ] == ':' )
+            {
+                if( i == 0 )
+                {
+                    result = SDP_RESULT_MESSAGE_MALFORMED_NOT_ENOUGH_INFO;
+                    break;
+                }
+
+                pAttribute->pAttributeName = &( pValue[ 0 ] );
+                pAttribute->attributeNameLength = i;
+
+                if( ( i + 1 ) < valueLength )
+                {
+                    pAttribute->pAttributeValue = &( pValue[ i + 1 ] );
+                    pAttribute->attributeValueLength = valueLength - ( i + 1 );
+                }
+                else
+                {
+                    pAttribute->pAttributeValue = NULL;
+                    pAttribute->attributeValueLength = 0;
+                }
+                break;
+            }
+        }
+
+        /* No ':' in this attribute. */
+        if( i == valueLength )
+        {
+            pAttribute->pAttributeName = &( pValue[ 0 ] );
+            pAttribute->attributeNameLength = valueLength;
+
+            pAttribute->pAttributeValue = NULL;
+            pAttribute->attributeValueLength = 0;
+        }
+    }
+
+    return result;
+}
+/*-----------------------------------------------------------*/
+
+SdpResult_t SdpDeserializer_ParseMedia( const char * pValue,
+                                        size_t valueLength,
+                                        SdpMedia_t * pMedia )
+{
+    SdpResult_t result = SDP_RESULT_OK;
+    size_t i, j, start = 0, numSpaces = 0;
+    int sscanfRetVal;
+
+    /* Input check. */
+    if( ( pValue == NULL ) ||
+        ( pMedia == NULL ) )
+    {
+        result = SDP_RESULT_BAD_PARAM;
+    }
+
+    if( result == SDP_RESULT_OK )
+    {
+        for( i = 0; i < valueLength; i++ )
+        {
+            if( pValue[ i ] == ' ' )
+            {
+                numSpaces += 1;
+
+                if( numSpaces == 1 )
+                {
+                    pMedia->pMedia = &( pValue[ start ] );
+                    pMedia->mediaLength = i - start;
+                }
+                else if( numSpaces == 2 )
+                {
+                    sscanfRetVal = sscanf( &( pValue[ start ] ),
+                                           "%" SDP_PRINT_FMT_UINT16,
+                                           &( pMedia->port ) );
+
+                    if( sscanfRetVal != 1 )
+                    {
+                        result = SDP_RESULT_MESSAGE_MALFORMED_INVALID_PORT;
+                        break;
+                    }
+
+                    pMedia->portNum = 0;
+
+                    for( j = start ; j < i ; j++ )
+                    {
+                        if( pValue[ j ] == '/' )
+                        {
+                            sscanfRetVal = sscanf( &( pValue[ j + 1 ] ),
+                                                   "%" SDP_PRINT_FMT_UINT16,
+                                                   &( pMedia->portNum ) );
+
+                            if( sscanfRetVal != 1 )
+                            {
+                                result = SDP_RESULT_MESSAGE_MALFORMED_INVALID_PORTNUM;
+                            }
+
+                            break;
+                        }
+                    }
+                }
+                else /* numSpaces == 3 */
+                {
+                    pMedia->pProtocol = &( pValue[ start ] );
+                    pMedia->protocolLength = i - start;
+
+                    start = i + 1;
+                    break;
+                }
+
+                start = i + 1;
+            }
+        }
+    }
+
+    if( result == SDP_RESULT_OK )
+    {
+        if( i < valueLength )
+        {
+            pMedia->pFmt = &( pValue[ start ] );
+            pMedia->fmtLength = valueLength - start;
+        }
+        else
+        {
+            result = SDP_RESULT_MESSAGE_MALFORMED_NOT_ENOUGH_INFO;
+        }
+    }
+
+    return result;
+}
+/*-----------------------------------------------------------*/
