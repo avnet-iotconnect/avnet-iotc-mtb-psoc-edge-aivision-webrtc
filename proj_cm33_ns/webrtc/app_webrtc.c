@@ -38,8 +38,12 @@
 #define APP_WEBRTC_TRANSCEIVER_VIDEO_TRACK_ID "myVideoTrack"
 #define APP_WEBRTC_TRANSCEIVER_VIDEO_MID "0"
 #define APP_WEBRTC_TRANSCEIVER_AUDIO_TRACK_ID "myAudioTrack"
-#define APP_WEBRTC_TRANSCEIVER_ROLLING_BUFFER_SEC 3U
-#define APP_WEBRTC_TRANSCEIVER_H264_BITRATE_BPS (1400U * 1024U)
+/* Rolling buffer is per-RTP-packet malloc'd on demand and only freed when the
+ * circular queue evicts an old slot. Capacity ≈ SEC × BPS / (8 × MTU). At our
+ * ~60 KB heap budget we can hold ~20 packets, so size both knobs to match real
+ * traffic (~180 kbps from CM55 at 5 fps) and a short RTX window. */
+#define APP_WEBRTC_TRANSCEIVER_ROLLING_BUFFER_SEC 1U
+#define APP_WEBRTC_TRANSCEIVER_H264_BITRATE_BPS (200U * 1024U)
 #define APP_WEBRTC_TRANSCEIVER_OPUS_BITRATE_BPS  (64U * 1024U)
 
 #define WEBRTC_TASK_NAME "webrtc"
