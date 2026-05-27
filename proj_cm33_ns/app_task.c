@@ -313,11 +313,9 @@ void app_task(void *pvParameters) {
     printf("CPID: %s\n", config.cpid);
     printf("ENV: %s\n", config.env);
     printf("WiFi SSID: %s\n", app_eeprom_data_get_wifi_ssid(WIFI_SSID));
+
     memory_test();
-    /* fork-aivision: temporary harness for SDP uint64 helpers (newlib-nano
-     * lacks %llu/%lld). Remove together with helpers if/when libc gains it. */
-    extern void app_llu_helpers_selftest(void);
-    app_llu_helpers_selftest();
+
     if (strlen(IOTCONNECT_DEVICE_CERT) > 0) {
         printf("Device certificate is set in app_config.h\n");
     } else if (strlen(app_eeprom_data_get_certificate(IOTCONNECT_DEVICE_CERT)) > 0) {
@@ -340,7 +338,6 @@ void app_task(void *pvParameters) {
 
     // Smoke-test the AWS creds mTLS flow before connecting MQTT.
     int creds_status = iotconnect_sdk_obtain_aws_creds();
-
 
     memory_test();
 
@@ -396,91 +393,3 @@ void app_task(void *pvParameters) {
         taskYIELD();
     }
 }
-
-/* ============================================================
- * fork-aivision: temporary self-test for SDP uint64 <-> string helpers.
- * The real helpers live as `static` inside third_party/.../sdp_serializer.c
- * and sdp_deserializer.c. Duplicated here to validate behavior in isolation.
- * To remove: delete this whole block AND the call at the printf site above.
- * ============================================================ */
-
-#include <stdint.h>
-#include <inttypes.h>
-
-#define APP_LLU_U64_DEC_MAX 21
-
-static size_t app_llu_u64_to_dec(uint64_t v, char *out) {
-    char tmp[APP_LLU_U64_DEC_MAX];
-    size_t i = 0, n;
-    if (v == 0U) { out[0] = '0'; return 1U; }
-    while (v > 0U) { tmp[i++] = (char)('0' + (v % 10U)); v /= 10U; }
-    n = i;
-    while (i > 0U) { i--; *out++ = tmp[i]; }
-    return n;
-}
-
-static int app_llu_dec_to_u64(const char *s, size_t maxLen, uint64_t *out) {
-    uint64_t v = 0U;
-    size_t i = 0;
-    if (s == NULL || out == NULL || maxLen == 0U ||
-        s[0] < '0' || s[0] > '9') return 0;
-    while (i < maxLen && s[i] >= '0' && s[i] <= '9') {
-        v = (v * 10U) + (uint64_t)(s[i] - '0');
-        i++;
-    }
-    *out = v;
-    return 1;
-}
-
-#define APP_LLU_CHECK(cond) do { \
-    if (cond) { pass_count++; } \
-    else { printf("  FAIL line %d: %s\n", __LINE__, #cond); fail_count++; } \
-} while (0)
-
-void app_llu_helpers_selftest(void) {
-    int pass_count = 0, fail_count = 0;
-    char buf[APP_LLU_U64_DEC_MAX + 8];
-    uint64_t v;
-    size_t n;
-
-    /* u64_to_dec: zero, small, max. */
-    n = app_llu_u64_to_dec(0U, buf); buf[n] = 0;
-    APP_LLU_CHECK(n == 1 && buf[0] == '0');
-
-    n = app_llu_u64_to_dec(7U, buf); buf[n] = 0;
-    APP_LLU_CHECK(n == 1 && buf[0] == '7');
-
-    n = app_llu_u64_to_dec(12345U, buf); buf[n] = 0;
-    APP_LLU_CHECK(n == 5 && memcmp(buf, "12345", 5) == 0);
-
-    n = app_llu_u64_to_dec(UINT64_MAX, buf); buf[n] = 0;
-    APP_LLU_CHECK(n == 20 && memcmp(buf, "18446744073709551615", 20) == 0);
-
-    /* dec_to_u64: basic, stops at non-digit (space/CR), full-string ok. */
-    APP_LLU_CHECK(app_llu_dec_to_u64("0", 1, &v) == 1 && v == 0U);
-    APP_LLU_CHECK(app_llu_dec_to_u64("7", 1, &v) == 1 && v == 7U);
-    APP_LLU_CHECK(app_llu_dec_to_u64("12345 67890", 11, &v) == 1 && v == 12345U);
-    APP_LLU_CHECK(app_llu_dec_to_u64("12345\r\n", 7, &v) == 1 && v == 12345U);
-    APP_LLU_CHECK(app_llu_dec_to_u64("18446744073709551615", 20, &v) == 1 && v == UINT64_MAX);
-
-    /* dec_to_u64: failure cases (leading non-digit, empty). */
-    APP_LLU_CHECK(app_llu_dec_to_u64(" 123", 4, &v) == 0);
-    APP_LLU_CHECK(app_llu_dec_to_u64("abc", 3, &v) == 0);
-    APP_LLU_CHECK(app_llu_dec_to_u64("", 0, &v) == 0);
-
-    /* Round-trip with a realistic SDP-shaped value. */
-    {
-        uint64_t orig = Cy_SysLib_GetUniqueId();
-        uint64_t back = 0;
-        n = app_llu_u64_to_dec(orig, buf);
-        buf[n] = ' ';                     /* simulate trailing space delimiter */
-        buf[n+1] = 0;
-        APP_LLU_CHECK(app_llu_dec_to_u64(buf, n + 1, &back) == 1 && back == orig);
-        printf("  round-trip unique-id: orig-low32=%lu back-low32=%lu str=%s\n",
-               (unsigned long)orig, (unsigned long)back, buf);
-    }
-
-    printf("app_llu_helpers_selftest: %d passed, %d failed\n", pass_count, fail_count);
-}
-
-/* [] END OF FILE */
