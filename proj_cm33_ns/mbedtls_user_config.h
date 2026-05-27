@@ -340,18 +340,6 @@
  */
 #define MBEDTLS_SSL_PROTO_DTLS
 
-/* DTLS-SRTP support (RFC 5764) for WebRTC media encryption.
- * Enables MBEDTLS_TLS_SRTP_AES128_CM_HMAC_SHA1_80/_32 protection profiles
- * and the mbedtls_ssl_conf_dtls_srtp_protection_profiles() API. */
-#define MBEDTLS_SSL_DTLS_SRTP
-
-/* DTLS HelloVerifyRequest cookie support — required for the DTLS handshake
- * when we act as the DTLS server (typical when we accept a WebRTC offer). */
-#define MBEDTLS_SSL_COOKIE_C
-
-/* DTLS replay-window protection. Recommended whenever DTLS is on. */
-#define MBEDTLS_SSL_DTLS_ANTI_REPLAY
-
 /**
  * \def MBEDTLS_SSL_DTLS_CONNECTION_ID_COMPAT
  *
@@ -411,7 +399,7 @@
  *
  * Comment this to disable anti-replay in DTLS.
  */
-#undef MBEDTLS_SSL_DTLS_ANTI_REPLAY
+#define MBEDTLS_SSL_DTLS_ANTI_REPLAY
 
 /**
  * \def MBEDTLS_SSL_DTLS_HELLO_VERIFY
@@ -523,7 +511,7 @@
  * Module:  library/ssl_cookie.c
  * Caller:
  */
-#undef MBEDTLS_SSL_COOKIE_C
+#define MBEDTLS_SSL_COOKIE_C
 
 /**
  * \def MBEDTLS_TIMING_C
@@ -1014,6 +1002,19 @@
 #define MBEDTLS_SSL_IN_CONTENT_LEN (10 * 1024)
 #undef MBEDTLS_SSL_OUT_CONTENT_LEN
 #define MBEDTLS_SSL_OUT_CONTENT_LEN (6 * 1024)
+
+// DTLS - related:
+/** DTLS-SRTP support (RFC 5764) for WebRTC media encryption.
+  Enables MBEDTLS_TLS_SRTP_AES128_CM_HMAC_SHA1_80/_32 protection profiles
+  and the mbedtls_ssl_conf_dtls_srtp_protection_profiles() API. 
+  */
+#define MBEDTLS_SSL_DTLS_SRTP
+/** DTLS HelloVerifyRequest cookie support — required for the DTLS handshake
+ when we act as the DTLS server (typical when we accept a WebRTC offer).
+ so make sure to eanble MBEDTLS_SSL_COOKIE_C
+ DTLS replay-window protection. Recommended whenever DTLS is on.
+ so make sure MBEDTLS_SSL_DTLS_ANTI_REPLAY
+ */
 
 
 /**
