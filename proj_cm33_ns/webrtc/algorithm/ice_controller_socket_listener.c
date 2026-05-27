@@ -70,7 +70,7 @@ static int32_t RecvPacketUdp( IceControllerSocketContext_t * pSocketContext,
             rxPort = ntohs( p4->sin_port );
             rxIp = ntohl( p4->sin_addr.s_addr );
         }
-        LogInfo( ( "<-UDP %u bytes from %u.%u.%u.%u:%u",
+        LogDebug( ( "<-UDP %u bytes from %u.%u.%u.%u:%u",
                    ( unsigned ) ret,
                    ( rxIp >> 24 ) & 0xFFu,
                    ( rxIp >> 16 ) & 0xFFu,
