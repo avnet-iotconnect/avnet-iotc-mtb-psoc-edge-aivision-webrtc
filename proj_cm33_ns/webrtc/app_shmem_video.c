@@ -29,6 +29,7 @@
 /* How often to emit a summary line, in delivered frames. */
 #define APP_SHMEM_VIDEO_REPORT_EVERY    (30U)
 
+extern void memory_test(void);
 
 static TaskHandle_t shmem_video_task_handle = NULL;
 static volatile bool shmem_video_running = false;
@@ -86,6 +87,7 @@ static void shmem_video_task(void *arg) {
                 (unsigned)frames_total, (unsigned)bytes_total, (unsigned)idr_total,
                 (unsigned)write_fail_total, (unsigned)window_frames, (unsigned)window_bytes
             );
+            memory_test();
             window_frames = 0;
             window_bytes = 0;
         }
