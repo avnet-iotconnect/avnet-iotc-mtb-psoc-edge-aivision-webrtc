@@ -44,17 +44,17 @@ extern "C" {
 #define VIDEO_RING_SLOT_BYTES   (32 * 1024)
 
 typedef struct {
-    uint32_t available;  /* 0 = empty/consumed, 1 = filled by CM55 */
-    uint32_t length;     /* bytes written into payload */
-    uint32_t pts_ms;     /* producer-side timestamp */
-    uint32_t is_idr;     /* nonzero if frame contains an IDR */
-    uint32_t seq;        /* informational frame counter */
-    uint8_t  payload[VIDEO_RING_SLOT_BYTES];
+    uint32_t available; // 0 = empty/consumed, 1 = filled by CM55
+    uint32_t length; // bytes written into payload
+    uint32_t pts_ms; // producer-side timestamp
+    uint32_t is_idr; // nonzero if frame contains an IDR
+    uint32_t seq; // informational frame counter
+    uint8_t payload[VIDEO_RING_SLOT_BYTES];
 } video_ring_slot_t;
 
 typedef struct {
-    uint32_t magic;          /* VIDEO_RING_MAGIC once initialized */
-    uint32_t enabled;        /* 0 = paused, 1 = streaming -- written by CM33 */
+    uint32_t magic; // VIDEO_RING_MAGIC once initialized
+    uint32_t enabled; // 0 = paused, 1 = streaming -- written by CM33
     uint32_t reserved[6];
 } video_ring_header_t;
 
@@ -71,10 +71,10 @@ void video_ring_init(void);
  * returns false the caller's encoded bytes are discarded. */
 bool video_ring_try_publish(
     const uint8_t *coded_data,
-    uint32_t       coded_size,
-    uint32_t       pts_ms,
-    bool           is_idr,
-    uint32_t       seq
+    uint32_t coded_size,
+    uint32_t pts_ms,
+    bool is_idr,
+    uint32_t seq
 );
 
 /* Diagnostics -- read-only view of header for logging. */
@@ -82,10 +82,10 @@ const video_ring_header_t *video_ring_header(void);
 
 /* Producer-side counters (CM55-private; informational only). */
 typedef struct {
-    uint32_t published;        /* slots successfully filled */
-    uint32_t dropped_busy;     /* next slot still held by CM33 */
-    uint32_t dropped_disabled; /* enabled==0 at start of frame */
-    uint32_t dropped_oversize; /* coded_size > VIDEO_RING_SLOT_BYTES */
+    uint32_t published; // slots successfully filled
+    uint32_t dropped_busy; // next slot still held by CM33
+    uint32_t dropped_disabled; // enabled==0 at start of frame
+    uint32_t dropped_oversize; // coded_size > VIDEO_RING_SLOT_BYTES
 } video_ring_producer_stats_t;
 
 const video_ring_producer_stats_t *video_ring_producer_stats(void);
@@ -94,10 +94,10 @@ const video_ring_producer_stats_t *video_ring_producer_stats(void);
 
 typedef struct {
     const uint8_t *payload;
-    uint32_t       length;
-    uint32_t       pts_ms;
-    bool           is_idr;
-    uint32_t       seq;
+    uint32_t length;
+    uint32_t pts_ms;
+    bool is_idr;
+    uint32_t seq;
 } video_ring_slot_view_t;
 
 /* Session start: clears both slot available flags, then sets

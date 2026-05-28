@@ -2,8 +2,7 @@
  * Copyright (C) 2026 Avnet
  * Authors: Nikola Markovic <nikola.markovic@avnet.com> et al.
  *
- * CM55-side producer for the cross-core H.264 NAL ring.  See
- * shared/include/video_ring.h and PILOT.md §5 for the full protocol.
+ * CM55-side producer for the cross-core H.264 NAL ring.
  */
 
 #include <stdint.h>
@@ -23,11 +22,8 @@
  *   total            ~ 64 KB, well within 256 KB. */
 #define VIDEO_RING_BASE_ADDR (CYMEM_CM55_0_m33_m55_shared_START)
 
-static volatile video_ring_header_t * const ring_header =
-    (volatile video_ring_header_t *)VIDEO_RING_BASE_ADDR;
-
-static video_ring_slot_t * const ring_slots =
-    (video_ring_slot_t *)(VIDEO_RING_BASE_ADDR + sizeof(video_ring_header_t));
+static volatile video_ring_header_t * const ring_header = (volatile video_ring_header_t *)VIDEO_RING_BASE_ADDR;
+static video_ring_slot_t * const ring_slots = (video_ring_slot_t *)(VIDEO_RING_BASE_ADDR + sizeof(video_ring_header_t));
 
 /* Producer-private state.  Lives in CM55 SRAM, not the shared region. */
 static uint32_t producer_idx = 0;
@@ -71,10 +67,9 @@ bool video_ring_try_publish(
     bool is_idr,
     uint32_t seq
 ) {
-    /* 1. Read enabled.  CM33 may have toggled it since last call. */
     uint32_t enabled = ring_header->enabled;
 
-    /* 2. On any 0->1 transition (including first ever), re-arm to slot 0. */
+    // On any 0->1 transition (including first ever), re-arm to slot 0.
     if (enabled != 0 && prev_enabled == 0) {
         producer_idx = 0;
     }
@@ -90,25 +85,22 @@ bool video_ring_try_publish(
         return false;
     }
 
-    /* 3. Check the target slot.  CM33 hasn't released it yet -> drop,
-     *    do NOT advance producer_idx.  Slot ownership and ordering are
-     *    preserved across the drop. */
+    // CM33 hasn't released the target slot -> drop without advancing
+    // producer_idx, so slot ownership and ordering survive the drop.
     video_ring_slot_t *slot = &ring_slots[producer_idx];
     if (slot->available != 0U) {
         producer_stats.dropped_busy++;
         return false;
     }
 
-    /* 4. Write payload + metadata.  Only the producer touches these
-     *    fields while available==0, so no race. */
+    // Only the producer touches these fields while available==0, so no race.
     memcpy(slot->payload, coded_data, coded_size);
     slot->length = coded_size;
     slot->pts_ms = pts_ms;
     slot->is_idr = is_idr ? 1U : 0U;
     slot->seq = seq;
 
-    /* 5. Order the metadata writes ahead of the available flip, then
-     *    flush the slot to memory so CM33 can see it. */
+    // Order metadata writes ahead of the available flip, then flush so CM33 sees it.
     clean_range(slot, offsetof(video_ring_slot_t, payload) + coded_size);
     __DMB();
     slot->available = 1U;
