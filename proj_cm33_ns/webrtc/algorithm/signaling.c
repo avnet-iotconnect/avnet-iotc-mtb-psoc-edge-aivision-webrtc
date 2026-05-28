@@ -100,6 +100,14 @@
 #define SIG_CLIENT_ID_MAX 64
 #define SIG_WS_MUTEX_TIMEOUT_MS 500U
 
+// WSS keepalive. KVS signaling endpoints drop connections that go application-
+// idle for somewhere in the 60–90 s range. Send a WSS PING every 30 s while
+// the connection is up; the peer auto-PONGs per RFC 6455 and the connection
+// stays warm across long browser-idle gaps between viewer sessions. Fires
+// from both wait_for_offer (idle waiting for a viewer) and signaling_tick
+// (during media pump — WSS itself is idle since ICE/SRTP run over UDP).
+#define SIG_KEEPALIVE_PING_INTERVAL_MS 30000U
+
 // Outbox queue depth. Producers (signaling_send_answer,
 // signaling_send_ice_candidate, called from peer-connection's session task
 // when local ICE candidates appear) drop pre-formed WSS envelopes here;
@@ -183,6 +191,8 @@ struct SignalingCtx {
     char peer_client_id[SIG_CLIENT_ID_MAX];
     size_t peer_client_id_len;
     PeerConnectionSession_t *peer_connection_session;
+    // Last time we queued a WSS PING. See SIG_KEEPALIVE_PING_INTERVAL_MS.
+    TickType_t last_ping_tick;
 };
 
 // File-scope statics for predictable-size scratch used inside
@@ -701,6 +711,7 @@ enc_fail:
 
 
 static void drain_outbox_locked(SignalingHandle sig);
+static void maybe_queue_keepalive_ping_locked(SignalingHandle sig);
 
 // Convert real CR/LF byte pairs in `in` to the 4-char JSON-escape form
 // `\r\n` (backslash, 'r', backslash, 'n') and copy into `out`.
@@ -1379,6 +1390,7 @@ SignalingHandle signaling_connect(const char *signed_url) {
     g_sig.peer_client_id[0] = '\0';
     g_sig.peer_client_id_len = 0;
     g_sig.peer_connection_session = NULL;
+    g_sig.last_ping_tick = xTaskGetTickCount();
     printf("[signaling] WS upgrade OK (101 Switching Protocols)\n");
     return &g_sig;
 }
@@ -1483,7 +1495,9 @@ int signaling_wait_for_offer(SignalingHandle sig, char *out_sdp, size_t out_sdp_
             sig->pending_offer_len = 0;
         }
 
+        int recv_err = 0;
         if (NULL == consumed) {
+            maybe_queue_keepalive_ping_locked(sig);
             drain_outbox_locked(sig);
             // Send any queued frames first (close, pong, future messages).
             if (wslay_event_want_write(sig->ws_ctx)) {
@@ -1496,7 +1510,6 @@ int signaling_wait_for_offer(SignalingHandle sig, char *out_sdp, size_t out_sdp_
                 }
             }
 
-            int recv_err = 0;
             if (wslay_event_want_read(sig->ws_ctx)) {
                 recv_err = wslay_event_recv(sig->ws_ctx);
             }
@@ -1509,37 +1522,41 @@ int signaling_wait_for_offer(SignalingHandle sig, char *out_sdp, size_t out_sdp_
                 sig->pending_offer_sdp = NULL;
                 sig->pending_offer_len = 0;
             }
+        }
 
-            transport_error = sig->transport_error;
-            peer_closed = !wslay_event_want_read(sig->ws_ctx) && !wslay_event_want_write(sig->ws_ctx);
-            signaling_unlock(sig);
+        transport_error = sig->transport_error;
+        peer_closed = !wslay_event_want_read(sig->ws_ctx) && !wslay_event_want_write(sig->ws_ctx);
+        signaling_unlock(sig);
 
-            if (NULL == consumed) {
-                if (0 != recv_err) {
-                    printf("[sig] wslay_event_recv rc=%d transport_err=%d\n",
-                           recv_err, (int) transport_error);
-                    rc = -1;
-                    goto out;
-                }
-                if (transport_error) {
-                    rc = -1;
-                    goto out;
-                }
-                if (peer_closed) {
-                    printf("[sig] peer close, read+write both disabled\n");
-                    rc = -1;
-                    goto out;
-                }
-
-                // Yield. The recv callback already blocks up to
-                // WSS_SOCK_RECV_TIMEOUT_MS, but want_read may be 0 (e.g., right
-                // after a control-frame round trip), so a small extra yield
-                // keeps this loop cooperative.
-                vTaskDelay(pdMS_TO_TICKS(20));
-                continue;
+        // Transport-dead check runs *regardless* of whether we captured an
+        // offer this iteration. A pending offer parked by the same recv that
+        // also reported -1 (typical KVS idle-timeout pattern: server delivers
+        // the offer, FINs the socket) is useless — every subsequent
+        // send_answer / trickle ICE would fail. Drop it and let the outer
+        // loop rebuild the WSS; the browser will re-publish on reconnect.
+        if (0 != recv_err || transport_error || peer_closed) {
+            if (NULL != consumed) {
+                printf("[sig] dropping captured offer (%u bytes), transport dead: recv_err=%d transport_err=%d peer_closed=%d\n",
+                       (unsigned) consumed_len, recv_err, (int) transport_error, (int) peer_closed);
+                free(consumed);
+                consumed = NULL;
+            } else if (0 != recv_err) {
+                printf("[sig] wslay_event_recv rc=%d transport_err=%d\n",
+                       recv_err, (int) transport_error);
+            } else if (peer_closed) {
+                printf("[sig] peer close, read+write both disabled\n");
             }
-        } else {
-            signaling_unlock(sig);
+            rc = -1;
+            goto out;
+        }
+
+        if (NULL == consumed) {
+            // Yield. The recv callback already blocks up to
+            // WSS_SOCK_RECV_TIMEOUT_MS, but want_read may be 0 (e.g., right
+            // after a control-frame round trip), so a small extra yield
+            // keeps this loop cooperative.
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
         }
 
         // Hand the offer out. consumed_len excludes the trailing NUL that
@@ -1588,6 +1605,32 @@ static void drain_outbox_locked(SignalingHandle sig) {
     }
 }
 
+// Queue an empty WSS PING control frame if SIG_KEEPALIVE_PING_INTERVAL_MS has
+// elapsed since the last one. Caller must hold ws_mutex (touches wslay state
+// and sig->last_ping_tick).
+static void maybe_queue_keepalive_ping_locked(SignalingHandle sig) {
+    if (NULL == sig->ws_ctx) {
+        return;
+    }
+    TickType_t now = xTaskGetTickCount();
+    if ((now - sig->last_ping_tick) < pdMS_TO_TICKS(SIG_KEEPALIVE_PING_INTERVAL_MS)) {
+        return;
+    }
+    struct wslay_event_msg ping = {
+        .opcode     = WSLAY_PING,
+        .msg        = NULL,
+        .msg_length = 0,
+    };
+    int wrc = wslay_event_queue_msg(sig->ws_ctx, &ping);
+    if (0 != wrc) {
+        // Failure here isn't fatal — next tick retries. Don't bump
+        // last_ping_tick so we try again immediately.
+        printf("[sig] keepalive PING queue failed: %d\n", wrc);
+        return;
+    }
+    sig->last_ping_tick = now;
+}
+
 int signaling_tick(SignalingHandle sig) {
     if (NULL == sig || !sig->connected || NULL == sig->ws_ctx) {
         return -1;
@@ -1605,6 +1648,7 @@ int signaling_tick(SignalingHandle sig) {
         signaling_unlock(sig);
         return -1;
     }
+    maybe_queue_keepalive_ping_locked(sig);
     drain_outbox_locked(sig);
     if (wslay_event_want_write(sig->ws_ctx)) {
         int wrc = wslay_event_send(sig->ws_ctx);
