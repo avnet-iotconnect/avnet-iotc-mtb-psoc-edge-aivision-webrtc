@@ -144,9 +144,12 @@
 //
 // SDP offer plumbing: KVS bursts several frames (often ICE_CANDIDATE *and*
 // SDP_OFFER) inside one wslay_event_recv call, firing on_msg_recv for each.
-// We dispatch synchronously from on_msg_recv (matching the Ameba/N6 reference
-// pattern) into the caller's SDP buffer, since a single-slot latch silently
-// dropped earlier frames in the burst — typically the SDP_OFFER itself.
+// dispatch_text_frame captures every SDP_OFFER into an internally-owned
+// pending slot regardless of whether a wait_for_offer is currently parked —
+// the WSS stays open across many viewer sessions, so a browser START arriving
+// while we're in the middle of tearing down the previous viewer must not be
+// dropped. signaling_wait_for_offer drains the pending slot immediately if
+// one is present, otherwise blocks until the next offer arrives.
 // Cross-task handoff for outbound WSS messages. Producer (the task that
 // calls signaling_send_*) builds the full envelope on the heap, then drops
 // {envelope, len} into outbox_queue and returns immediately. Consumer
@@ -167,15 +170,16 @@ struct SignalingCtx {
     QueueHandle_t outbox_queue;
     bool connected;
     bool transport_error;
-    // Caller's SDP buffer for the in-flight signaling_wait_for_offer call.
-    // Populated by on_msg_recv when an SDP_OFFER envelope arrives; offer_ready
-    // flips true and the wait loop returns. NULL outside of wait_for_offer.
-    char *offer_sdp_buf;
-    size_t offer_sdp_cap;
-    size_t offer_sdp_len;
-    bool offer_ready;
-    // senderClientId of the viewer that sent the latched offer. Consumed by
-    // signaling_send_answer to fill RecipientClientId.
+    // Latest SDP offer captured from the WSS. Owned by signaling; malloc'd in
+    // dispatch_text_frame when an SDP_OFFER arrives, freed when
+    // signaling_wait_for_offer consumes it (or on disconnect). A second offer
+    // arriving before the first is consumed replaces it — newest wins, which
+    // matches what a viewer doing STOP/START expects.
+    char *pending_offer_sdp;
+    size_t pending_offer_len;
+    // senderClientId of the viewer that sent the pending offer. Consumed by
+    // signaling_send_answer to fill RecipientClientId. Re-latched on every
+    // incoming SDP_OFFER so back-to-back viewers route correctly.
     char peer_client_id[SIG_CLIENT_ID_MAX];
     size_t peer_client_id_len;
     PeerConnectionSession_t *peer_connection_session;
@@ -974,8 +978,9 @@ static int wslay_genmask_cb(wslay_event_context_ptr ctx, uint8_t *buf, size_t le
 
 // Dispatch a single inbound text frame. Called from on_msg_recv, possibly
 // multiple times per wslay_event_recv() call when KVS bursts frames. If the
-// envelope is an SDP_OFFER and we don't already have one, decode it into the
-// caller's buffer and flip offer_ready. Anything else is logged and dropped.
+// envelope is an SDP_OFFER, decode it into a freshly malloc'd buffer and
+// install it as sig->pending_offer_sdp (replacing any prior unread offer).
+// Anything else is dispatched (ICE_CANDIDATE) or logged and dropped.
 static void dispatch_text_frame(SignalingHandle sig, const uint8_t *msg, size_t msg_len) {
     if (0 == msg_len) {
         return;
@@ -1039,60 +1044,48 @@ static void dispatch_text_frame(SignalingHandle sig, const uint8_t *msg, size_t 
         return;
     }
 
-    if (sig->offer_ready) {
-        // Already captured an offer this wait_for_offer cycle. KVS shouldn't
-        // re-send SDP_OFFER mid-handshake but log if it does.
-        printf("[signaling] duplicate SDP_OFFER, dropping (%u bytes)\n", (unsigned) msg_len);
-        return;
-    }
-
     if (NULL == recv.pBase64EncodedPayload || 0 == recv.base64EncodedPayloadLength) {
         printf("[signaling] SDP_OFFER missing messagePayload\n");
         return;
     }
-    if (NULL == sig->offer_sdp_buf || sig->offer_sdp_cap < 2) {
-        // Caller never set up a buffer (frame arrived outside wait_for_offer);
-        // shouldn't happen since we tear down g_sig.ws_ctx in disconnect.
-        printf("[signaling] SDP_OFFER arrived without an active buffer\n");
-        return;
-    }
 
-    if (recv.senderClientIdLength >= sizeof(sig->peer_client_id)) {
-        printf("[signaling] senderClientId too long (%u >= %u)\n",
-               (unsigned) recv.senderClientIdLength, (unsigned) sizeof(sig->peer_client_id));
+    // Decode into a freshly malloc'd buffer sized to the base64 payload. mbedtls
+    // gives back at most (b64_len * 3 / 4) bytes, and the JSON-unescape pass
+    // only shrinks the result, so this cap is safe.
+    size_t scratch_cap = (recv.base64EncodedPayloadLength * 3U) / 4U + 4U;
+    char *scratch = malloc(scratch_cap);
+    if (NULL == scratch) {
+        printf("[signaling] OOM allocating SDP_OFFER scratch (%u bytes)\n", (unsigned) scratch_cap);
         return;
     }
-    if (recv.senderClientIdLength > 0) {
-        memcpy(sig->peer_client_id, recv.pSenderClientId, recv.senderClientIdLength);
-    }
-    sig->peer_client_id[recv.senderClientIdLength] = '\0';
-    sig->peer_client_id_len = recv.senderClientIdLength;
 
     size_t decoded_len = 0;
     int b64_rc = mbedtls_base64_decode(
-        (unsigned char *) sig->offer_sdp_buf, sig->offer_sdp_cap - 1, &decoded_len,
+        (unsigned char *) scratch, scratch_cap - 1, &decoded_len,
         (const unsigned char *) recv.pBase64EncodedPayload,
         recv.base64EncodedPayloadLength
     );
     if (0 != b64_rc) {
         printf("[signaling] base64 decode of SDP_OFFER payload failed: -0x%04x\n", -b64_rc);
+        free(scratch);
         return;
     }
-    sig->offer_sdp_buf[decoded_len] = '\0';
+    scratch[decoded_len] = '\0';
 
     // The base64-decoded payload is a JSON envelope: {"type":"offer","sdp":"<sdp>"}.
     // Chrome / KVS escapes \r and \n inside the SDP as the two-byte literal
     // sequences \r and \n. Unwrap + un-escape in place so callers see real
     // SDP with real CR/LF.
-    char *p = strstr(sig->offer_sdp_buf, "\"sdp\":\"");
+    char *p = strstr(scratch, "\"sdp\":\"");
     if (NULL == p) {
         printf("[signaling] SDP_OFFER envelope missing \"sdp\" key\n");
+        free(scratch);
         return;
     }
     p += 7;     // past `"sdp":"`
-    char *dst = sig->offer_sdp_buf;
+    char *dst = scratch;
     const char *src = p;
-    const char *end = sig->offer_sdp_buf + decoded_len;
+    const char *end = scratch + decoded_len;
     bool closed = false;
     while (src < end) {
         char c = *src++;
@@ -1121,12 +1114,36 @@ static void dispatch_text_frame(SignalingHandle sig, const uint8_t *msg, size_t 
     }
     if (!closed) {
         printf("[signaling] SDP_OFFER envelope: unterminated \"sdp\" string\n");
+        free(scratch);
         return;
     }
-    size_t sdp_len = (size_t)(dst - sig->offer_sdp_buf);
-    sig->offer_sdp_buf[sdp_len] = '\0';
-    sig->offer_sdp_len = sdp_len;
-    sig->offer_ready = true;
+    size_t sdp_len = (size_t)(dst - scratch);
+    scratch[sdp_len] = '\0';
+
+    // Latch sender client id last, only after the offer payload is known good,
+    // so a malformed offer doesn't corrupt the routing for the next valid one.
+    if (recv.senderClientIdLength >= sizeof(sig->peer_client_id)) {
+        printf("[signaling] senderClientId too long (%u >= %u)\n",
+               (unsigned) recv.senderClientIdLength, (unsigned) sizeof(sig->peer_client_id));
+        free(scratch);
+        return;
+    }
+
+    // Install as the pending offer. Newest wins — replace any prior unread
+    // offer; the older viewer is no longer reachable through it.
+    if (NULL != sig->pending_offer_sdp) {
+        printf("[signaling] replacing unread pending SDP_OFFER (%u bytes) with newer (%u bytes)\n",
+               (unsigned) sig->pending_offer_len, (unsigned) sdp_len);
+        free(sig->pending_offer_sdp);
+    }
+    sig->pending_offer_sdp = scratch;
+    sig->pending_offer_len = sdp_len;
+
+    if (recv.senderClientIdLength > 0) {
+        memcpy(sig->peer_client_id, recv.pSenderClientId, recv.senderClientIdLength);
+    }
+    sig->peer_client_id[recv.senderClientIdLength] = '\0';
+    sig->peer_client_id_len = recv.senderClientIdLength;
 }
 
 static void wslay_on_msg_recv_cb(wslay_event_context_ptr ctx,
@@ -1357,10 +1374,8 @@ SignalingHandle signaling_connect(const char *signed_url) {
 
     g_sig.connected = true;
     g_sig.transport_error = false;
-    g_sig.offer_sdp_buf = NULL;
-    g_sig.offer_sdp_cap = 0;
-    g_sig.offer_sdp_len = 0;
-    g_sig.offer_ready = false;
+    g_sig.pending_offer_sdp = NULL;
+    g_sig.pending_offer_len = 0;
     g_sig.peer_client_id[0] = '\0';
     g_sig.peer_client_id_len = 0;
     g_sig.peer_connection_session = NULL;
@@ -1390,10 +1405,11 @@ void signaling_disconnect(SignalingHandle sig) {
             free(drop.envelope);
         }
     }
-    sig->offer_sdp_buf = NULL;
-    sig->offer_sdp_cap = 0;
-    sig->offer_sdp_len = 0;
-    sig->offer_ready = false;
+    if (NULL != sig->pending_offer_sdp) {
+        free(sig->pending_offer_sdp);
+        sig->pending_offer_sdp = NULL;
+    }
+    sig->pending_offer_len = 0;
     sig->peer_connection_session = NULL;
     cy_awsport_network_disconnect(&sig->net_ctx);
     cy_awsport_network_delete(&sig->net_ctx);
@@ -1418,16 +1434,21 @@ void signaling_disconnect(SignalingHandle sig) {
 // Signaling_ConstructWssMessage) handles the JSON shape on both sides; we
 // own the base64 step on either side and the wslay queue/drive on send.
 
-// Drive the wslay event loop until on_msg_recv flips offer_ready, the peer
-// closes, or the socket dies. On success returns 0 with out_sdp populated
-// (filled inline by dispatch_text_frame) and senderClientId latched on the
-// handle.
+// Drive the wslay event loop until dispatch_text_frame parks a pending SDP
+// offer, the peer closes, or the socket dies. On success returns 0 with
+// out_sdp populated (copied out of the internal pending slot, which is then
+// freed) and senderClientId latched on the handle.
 //
 // No wall-clock budget — we're MASTER and may idle indefinitely waiting for
 // a viewer (browser) to publish. The recv callback's per-call socket timeout
 // (WSS_SOCK_RECV_TIMEOUT_MS) keeps the loop cooperative. Caller's stop
 // signal is not observed here; the loop exits when the websocket closes
 // (network event or peer hangup → transport_error) or when an offer arrives.
+//
+// Re-entrant across viewer sessions: between calls, dispatch_text_frame may
+// still capture offers into the pending slot (e.g. a STOP/START on the
+// browser side mid-teardown), and the next wait_for_offer returns it
+// immediately.
 int signaling_wait_for_offer(SignalingHandle sig, char *out_sdp, size_t out_sdp_cap, size_t *out_sdp_len) {
     if (NULL == sig || NULL == out_sdp || out_sdp_cap < 2 || NULL == out_sdp_len
         || !sig->connected || NULL == sig->ws_ctx) {
@@ -1435,22 +1456,12 @@ int signaling_wait_for_offer(SignalingHandle sig, char *out_sdp, size_t out_sdp_
     }
     *out_sdp_len = 0;
 
-    // Park the caller's buffer where dispatch_text_frame can find it. Cleared
-    // before we return so a stale pointer can't survive between sessions.
-    if (0 != signaling_lock(sig, portMAX_DELAY)) {
-        return -1;
-    }
-    sig->offer_sdp_buf = out_sdp;
-    sig->offer_sdp_cap = out_sdp_cap;
-    sig->offer_sdp_len = 0;
-    sig->offer_ready = false;
-    signaling_unlock(sig);
-
     int rc;
     for (;;) {
-        bool offer_ready;
         bool transport_error;
         bool peer_closed;
+        char *consumed = NULL;
+        size_t consumed_len = 0;
 
         if (0 != signaling_lock(sig, pdMS_TO_TICKS(SIG_WS_MUTEX_TIMEOUT_MS))) {
             rc = -1;
@@ -1463,74 +1474,94 @@ int signaling_wait_for_offer(SignalingHandle sig, char *out_sdp, size_t out_sdp_
             goto out;
         }
 
-        drain_outbox_locked(sig);
-        // Send any queued frames first (close, pong, future messages).
-        if (wslay_event_want_write(sig->ws_ctx)) {
-            int wrc = wslay_event_send(sig->ws_ctx);
-            if (0 != wrc && !sig->offer_ready) {
-                printf("[sig] wslay_event_send rc=%d\n", wrc);
-                signaling_unlock(sig);
-                rc = -1;
-                goto out;
+        // Consume any offer parked by dispatch_text_frame before draining I/O,
+        // so an offer that arrived between viewer sessions returns immediately.
+        if (NULL != sig->pending_offer_sdp) {
+            consumed = sig->pending_offer_sdp;
+            consumed_len = sig->pending_offer_len;
+            sig->pending_offer_sdp = NULL;
+            sig->pending_offer_len = 0;
+        }
+
+        if (NULL == consumed) {
+            drain_outbox_locked(sig);
+            // Send any queued frames first (close, pong, future messages).
+            if (wslay_event_want_write(sig->ws_ctx)) {
+                int wrc = wslay_event_send(sig->ws_ctx);
+                if (0 != wrc) {
+                    printf("[sig] wslay_event_send rc=%d\n", wrc);
+                    signaling_unlock(sig);
+                    rc = -1;
+                    goto out;
+                }
             }
+
+            int recv_err = 0;
+            if (wslay_event_want_read(sig->ws_ctx)) {
+                recv_err = wslay_event_recv(sig->ws_ctx);
+            }
+
+            // dispatch_text_frame fires synchronously inside wslay_event_recv
+            // and may have just installed a pending offer — pick it up here.
+            if (NULL != sig->pending_offer_sdp) {
+                consumed = sig->pending_offer_sdp;
+                consumed_len = sig->pending_offer_len;
+                sig->pending_offer_sdp = NULL;
+                sig->pending_offer_len = 0;
+            }
+
+            transport_error = sig->transport_error;
+            peer_closed = !wslay_event_want_read(sig->ws_ctx) && !wslay_event_want_write(sig->ws_ctx);
+            signaling_unlock(sig);
+
+            if (NULL == consumed) {
+                if (0 != recv_err) {
+                    printf("[sig] wslay_event_recv rc=%d transport_err=%d\n",
+                           recv_err, (int) transport_error);
+                    rc = -1;
+                    goto out;
+                }
+                if (transport_error) {
+                    rc = -1;
+                    goto out;
+                }
+                if (peer_closed) {
+                    printf("[sig] peer close, read+write both disabled\n");
+                    rc = -1;
+                    goto out;
+                }
+
+                // Yield. The recv callback already blocks up to
+                // WSS_SOCK_RECV_TIMEOUT_MS, but want_read may be 0 (e.g., right
+                // after a control-frame round trip), so a small extra yield
+                // keeps this loop cooperative.
+                vTaskDelay(pdMS_TO_TICKS(20));
+                continue;
+            }
+        } else {
+            signaling_unlock(sig);
         }
 
-        int recv_err = 0;
-        if (wslay_event_want_read(sig->ws_ctx)) {
-            recv_err = wslay_event_recv(sig->ws_ctx);
-        }
-
-        offer_ready = sig->offer_ready;
-        transport_error = sig->transport_error;
-        peer_closed = !wslay_event_want_read(sig->ws_ctx) && !wslay_event_want_write(sig->ws_ctx);
-        if (offer_ready) {
-            *out_sdp_len = sig->offer_sdp_len;
-        }
-        signaling_unlock(sig);
-
-        // dispatch_text_frame fires synchronously inside wslay_event_recv,
-        // potentially multiple times per call when KVS bursts frames. Check
-        // offer_ready before treating an error as fatal — once we have the
-        // offer the socket close that often follows is irrelevant.
-        if (offer_ready) {
-            rc = 0;
-            goto out;
-        }
-
-        if (0 != recv_err) {
-            printf("[sig] wslay_event_recv rc=%d transport_err=%d\n",
-                   recv_err, (int) sig->transport_error);
+        // Hand the offer out. consumed_len excludes the trailing NUL that
+        // dispatch_text_frame wrote at scratch[sdp_len]; require room for that
+        // NUL in the caller's buffer.
+        if (consumed_len + 1U > out_sdp_cap) {
+            printf("[sig] caller offer buffer too small: have %u, need %u\n",
+                   (unsigned) out_sdp_cap, (unsigned) (consumed_len + 1U));
+            free(consumed);
             rc = -1;
             goto out;
         }
-
-        if (transport_error) {
-            rc = -1;
-            goto out;
-        }
-
-        if (peer_closed) {
-            // Read+write both disabled — peer closed cleanly, nothing left.
-            printf("[sig] peer close, read+write both disabled\n");
-            rc = -1;
-            goto out;
-        }
-
-        // Yield. The recv callback already blocks up to WSS_SOCK_RECV_TIMEOUT_MS,
-        // but want_read may be 0 (e.g., right after a control-frame round trip),
-        // so a small extra yield keeps this loop cooperative.
-        vTaskDelay(pdMS_TO_TICKS(20));
+        memcpy(out_sdp, consumed, consumed_len);
+        out_sdp[consumed_len] = '\0';
+        *out_sdp_len = consumed_len;
+        free(consumed);
+        rc = 0;
+        goto out;
     }
 
 out:
-    printf("[sig] wait_for_offer exit rc=%d offer_ready=%d\n",
-           rc, (int) sig->offer_ready);
-    // Drop the parked buffer — it's only valid for the duration of this call.
-    if (0 == signaling_lock(sig, portMAX_DELAY)) {
-        sig->offer_sdp_buf = NULL;
-        sig->offer_sdp_cap = 0;
-        signaling_unlock(sig);
-    }
+    printf("[sig] wait_for_offer exit rc=%d\n", rc);
     return rc;
 }
 

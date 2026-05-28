@@ -356,16 +356,14 @@ void app_task(void *pvParameters) {
         app_webrtc_start();
     }
     
-    // NOTE: Temp hack only send 2 mesages to avoid spam but have IoTConnect detect us
-    for (int i = 0; i < 1; i++) {
+    for (int i = 0; i < 10; i++) {
         ret = iotconnect_sdk_connect();
         if (CY_RSLT_SUCCESS != ret) {
             printf("Failed to initialize the /IOTCONNECT SDK. Error code: %u\n", (unsigned int) ret);
             goto exit_cleanup;
         }
         
-        // int max_messages = is_demo_mode ? 6000 : 300;
-        int max_messages = 2;
+        int max_messages = is_demo_mode ? 6000 : 300;
         for (int j = 0; iotconnect_sdk_is_connected() && j < max_messages; j++) {
             cy_rslt_t result = publish_telemetry();
             if (result != CY_RSLT_SUCCESS) {

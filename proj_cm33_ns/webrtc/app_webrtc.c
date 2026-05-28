@@ -25,6 +25,7 @@
 #include "ice_data_types.h"
 #include "ice_controller.h"
 #include "peer_connection.h"
+#include "peer_connection_data_types.h"
 #include "signaling.h"
 #include "srtp.h"
 #include "stun_data_types.h"
@@ -47,22 +48,43 @@
 #define APP_WEBRTC_TRANSCEIVER_OPUS_BITRATE_BPS  (64U * 1024U)
 
 #define WEBRTC_TASK_NAME "webrtc"
-#define WEBRTC_TASK_STACK_W (110U * 1024U)
+/* Sized after promoting PeerConnectionSession_t (~200 KB) from this task's
+ * stack to .bss. Old budget was 110*1024 words; the ~51k-word session was
+ * inside that. With it now in .bss the task only needs the phase-scoped SDP
+ * scratch (~13k words during negotiation) plus call-frame overhead. Leaves
+ * roughly the same headroom we had before. */
+#define WEBRTC_TASK_STACK_W (60U * 1024U)
 #define WEBRTC_TASK_PRIO (tskIDLE_PRIORITY + 2)
 
 #define APP_WEBRTC_POLL_IDLE_MS 20U
 #define APP_WEBRTC_BACKOFF_MS 1000U
 #define APP_WEBRTC_LOCAL_CANDIDATE_BUF_LEN 192U
+/* After PeerConnection_CloseSession returns synchronously, the peer-connection
+ * session task asynchronously drains ICE_CLOSED through OnClosePeerConnection,
+ * which resets state to INITED. Bound the wait so a stuck close doesn't pin
+ * the orchestrator forever. */
+#define APP_WEBRTC_CLOSE_DRAIN_MAX_MS 1000U
 
 static TaskHandle_t s_webrtc_task = NULL;
 static volatile bool s_streaming_requested = false;
 static volatile bool s_creds_dirty = false;
+
+static PeerConnectionSession_t s_session; // IMPORTANT: This object is ~200 KB
+static bool s_session_inited = false;
+static Transceiver_t s_video_transceiver;
+static Transceiver_t s_audio_transceiver;
 
 typedef struct AppWebrtcSignalingBridge {
     SignalingHandle sig;
     const char *sdp_mid;
     int sdp_m_line_index;
 } AppWebrtcSignalingBridge_t;
+
+static AppWebrtcSignalingBridge_t s_signaling_bridge = {
+    .sig = NULL,
+    .sdp_mid = APP_WEBRTC_TRANSCEIVER_VIDEO_MID,
+    .sdp_m_line_index = 0,
+};
 
 static int populate_creds(AwsCreds *out, char *region_buf, size_t region_buf_size) {
     const IotclDraCredentialsResult *creds = iotconnect_sdk_aws_creds_get();
@@ -301,81 +323,61 @@ static void on_local_candidate_ready(void *context, PeerConnectionIceLocalCandid
     }
 }
 
-static int run_session(void) {
-    char region_buf[APP_WEBRTC_AWS_REGION_MAXLEN + 1U];
-    char wss_endpoint[APP_WEBRTC_WSS_ENDPOINT_LEN];
-    AwsCreds aws_creds;
-    PeerConnectionSession_t session = {0};
-    /* Transceivers must outlive the PeerConnection they're added to:
-     * PeerConnection_AddTransceiver stores raw pointers, not copies, and
-     * SetPayloadType later dereferences ->codecBitMap and ->trackKind. */
-    Transceiver_t video_transceiver;
-    Transceiver_t audio_transceiver;
-    SignalingHandle sig = NULL;
-    AppWebrtcSignalingBridge_t signaling_bridge = {
-        .sig = NULL,
-        .sdp_mid = APP_WEBRTC_TRANSCEIVER_VIDEO_MID,
-        .sdp_m_line_index = 0,
-    };
-    bool peer_connection_inited = false;
+/* Initialize the peer-connection session struct exactly once, after srtp_init
+ * has succeeded. PeerConnection_Init spawns a per-session task and the ICE
+ * socket-listener task, plus creates SRTP/timer/queue state — re-running it
+ * would double-allocate. The session is reused across viewer sessions via the
+ * close-resets-to-INITED path. */
+static int session_init_once(void) {
+    if (s_session_inited) {
+        return 0;
+    }
+
+    PeerConnectionSessionConfiguration_t pc_config;
+    memset(&pc_config, 0, sizeof(pc_config));
+    pc_config.canTrickleIce = 1U;
+    pc_config.natTraversalConfigBitmap =
+        ICE_CANDIDATE_NAT_TRAVERSAL_CONFIG_SEND_HOST |
+        ICE_CANDIDATE_NAT_TRAVERSAL_CONFIG_ACCEPT_HOST |
+        ICE_CANDIDATE_NAT_TRAVERSAL_CONFIG_ACCEPT_SRFLX;
+    #if APP_WEBRTC_ENABLE_SRFLX
+    pc_config.natTraversalConfigBitmap |= ICE_CANDIDATE_NAT_TRAVERSAL_CONFIG_SEND_SRFLX;
+    #endif
+    #if APP_WEBRTC_ENABLE_TURN
+    pc_config.natTraversalConfigBitmap |=
+        ICE_CANDIDATE_NAT_TRAVERSAL_CONFIG_SEND_RELAY |
+        ICE_CANDIDATE_NAT_TRAVERSAL_CONFIG_ACCEPT_RELAY;
+    #endif
+
+    if (PEER_CONNECTION_RESULT_OK != PeerConnection_Init(&s_session, &pc_config)) {
+        printf("[webrtc] PeerConnection_Init failed\n");
+        return -1;
+    }
+
+    s_session_inited = true;
+    return 0;
+}
+
+/* Bounded wait for the session task to drain its close pipeline back to
+ * INITED. Reading state across tasks is a plain uint8_t load, atomic on M33. */
+static void wait_for_session_idle(void) {
+    for (uint32_t waited_ms = 0U; waited_ms < APP_WEBRTC_CLOSE_DRAIN_MAX_MS; waited_ms += APP_WEBRTC_POLL_IDLE_MS) {
+        if (PEER_CONNECTION_SESSION_STATE_INITED == s_session.state) {
+            return;
+        }
+        vTaskDelay(pdMS_TO_TICKS(APP_WEBRTC_POLL_IDLE_MS));
+    }
+    printf("[webrtc] timed out waiting for session to reach INITED (state=%d)\n", (int) s_session.state);
+}
+
+/* One viewer session: take an offer, build a peer connection on the shared
+ * session struct, pump media until DTLS dies / WSS dies / streaming stops,
+ * then close. Returns 0 on graceful end, -1 if signaling is dead and the
+ * outer loop should rebuild WSS. */
+static int run_viewer_session(SignalingHandle sig) {
     int rc = -1;
-
-    if (0 != populate_creds(&aws_creds, region_buf, sizeof(region_buf))) {
-        return -1;
-    }
-    if (0 != signaling_resolve_endpoint(&aws_creds, wss_endpoint, sizeof(wss_endpoint))) {
-        printf("[webrtc] signaling_resolve_endpoint failed\n");
-        return -1;
-    }
-
-    if (0 != signaling_open_session(&aws_creds, wss_endpoint, &sig)) {
-        goto cleanup;
-    }
-
-    {
-        PeerConnectionSessionConfiguration_t pc_config;
-        memset(&pc_config, 0, sizeof(pc_config));
-        pc_config.canTrickleIce = 1U;
-        pc_config.natTraversalConfigBitmap =
-            ICE_CANDIDATE_NAT_TRAVERSAL_CONFIG_SEND_HOST |
-            ICE_CANDIDATE_NAT_TRAVERSAL_CONFIG_ACCEPT_HOST |
-            ICE_CANDIDATE_NAT_TRAVERSAL_CONFIG_ACCEPT_SRFLX;
-        #if APP_WEBRTC_ENABLE_SRFLX
-        pc_config.natTraversalConfigBitmap |= ICE_CANDIDATE_NAT_TRAVERSAL_CONFIG_SEND_SRFLX;
-        #endif
-        #if APP_WEBRTC_ENABLE_TURN
-        pc_config.natTraversalConfigBitmap |=
-            ICE_CANDIDATE_NAT_TRAVERSAL_CONFIG_SEND_RELAY |
-            ICE_CANDIDATE_NAT_TRAVERSAL_CONFIG_ACCEPT_RELAY;
-        #endif
-
-        if (PEER_CONNECTION_RESULT_OK != PeerConnection_Init(&session, &pc_config)) {
-            printf("[webrtc] PeerConnection_Init failed\n");
-            goto cleanup;
-        }
-        peer_connection_inited = true;
-
-        init_video_transceiver(&video_transceiver);
-        if (PEER_CONNECTION_RESULT_OK != PeerConnection_AddTransceiver(&session, &video_transceiver)) {
-            printf("[webrtc] PeerConnection_AddTransceiver(video) failed\n");
-            goto cleanup;
-        }
-        init_audio_transceiver(&audio_transceiver);
-        if (PEER_CONNECTION_RESULT_OK != PeerConnection_AddTransceiver(&session, &audio_transceiver)) {
-            printf("[webrtc] PeerConnection_AddTransceiver(audio) failed\n");
-            goto cleanup;
-        }
-        if (PEER_CONNECTION_RESULT_OK != PeerConnection_SetOnLocalCandidateReady(&session, on_local_candidate_ready, &signaling_bridge)) {
-            printf("[webrtc] PeerConnection_SetOnLocalCandidateReady failed\n");
-            goto cleanup;
-        }
-        if (PEER_CONNECTION_RESULT_OK != PeerConnection_Start(&session)) {
-            printf("[webrtc] PeerConnection_Start failed\n");
-            goto cleanup;
-        }
-    }
-    signaling_bridge.sig = sig;
-    signaling_set_peer_connection(sig, &session);
+    bool media_started = false;
+    bool peer_attached = false;
 
     {
         /* SetRemoteDescription copies the offer into session->remoteSdpBuffer,
@@ -387,15 +389,42 @@ static int run_session(void) {
         printf("[webrtc] waiting for SDP offer...\n");
         if (0 != signaling_wait_for_offer(sig, offer_sdp, sizeof(offer_sdp), &offer_len)) {
             printf("[webrtc] signaling_wait_for_offer failed\n");
+            return -1;
+        }
+
+        /* Re-arm transceiver structs — PeerConnection_AddTransceiver stores
+         * raw pointers, and PC close clears the array but may have mutated
+         * the structs (ssrc, mid). */
+        init_video_transceiver(&s_video_transceiver);
+        init_audio_transceiver(&s_audio_transceiver);
+
+        if (PEER_CONNECTION_RESULT_OK != PeerConnection_AddTransceiver(&s_session, &s_video_transceiver)) {
+            printf("[webrtc] PeerConnection_AddTransceiver(video) failed\n");
             goto cleanup;
         }
+        if (PEER_CONNECTION_RESULT_OK != PeerConnection_AddTransceiver(&s_session, &s_audio_transceiver)) {
+            printf("[webrtc] PeerConnection_AddTransceiver(audio) failed\n");
+            goto cleanup;
+        }
+        if (PEER_CONNECTION_RESULT_OK != PeerConnection_SetOnLocalCandidateReady(&s_session, on_local_candidate_ready, &s_signaling_bridge)) {
+            printf("[webrtc] PeerConnection_SetOnLocalCandidateReady failed\n");
+            goto cleanup;
+        }
+        if (PEER_CONNECTION_RESULT_OK != PeerConnection_Start(&s_session)) {
+            printf("[webrtc] PeerConnection_Start failed\n");
+            goto cleanup;
+        }
+
+        s_signaling_bridge.sig = sig;
+        signaling_set_peer_connection(sig, &s_session);
+        peer_attached = true;
 
         memset(&remote_desc, 0, sizeof(remote_desc));
         remote_desc.pSdpBuffer = offer_sdp;
         remote_desc.sdpBufferLength = offer_len;
         remote_desc.type = SDP_CONTROLLER_MESSAGE_TYPE_OFFER;
 
-        if (PEER_CONNECTION_RESULT_OK != PeerConnection_SetRemoteDescription(&session, &remote_desc)) {
+        if (PEER_CONNECTION_RESULT_OK != PeerConnection_SetRemoteDescription(&s_session, &remote_desc)) {
             printf("[webrtc] PeerConnection_SetRemoteDescription failed\n");
             goto cleanup;
         }
@@ -412,12 +441,12 @@ static int run_session(void) {
         answer_desc.sdpBufferLength = sizeof(local_desc_buffer);
         answer_desc.type = SDP_CONTROLLER_MESSAGE_TYPE_ANSWER;
 
-        if (PEER_CONNECTION_RESULT_OK != PeerConnection_CreateAnswer(&session, &answer_desc, answer_buffer, &answer_len)) {
+        if (PEER_CONNECTION_RESULT_OK != PeerConnection_CreateAnswer(&s_session, &answer_desc, answer_buffer, &answer_len)) {
             printf("[webrtc] PeerConnection_CreateAnswer failed\n");
             goto cleanup;
         }
 
-        if (PEER_CONNECTION_RESULT_OK != PeerConnection_SetLocalDescription(&session, &answer_desc)) {
+        if (PEER_CONNECTION_RESULT_OK != PeerConnection_SetLocalDescription(&s_session, &answer_desc)) {
             printf("[webrtc] PeerConnection_SetLocalDescription failed\n");
             goto cleanup;
         }
@@ -430,32 +459,107 @@ static int run_session(void) {
         printf("[webrtc] answer queued (%d bytes)\n", (int) answer_len);
     }
 
-    (void) app_shmem_video_start(&session, &video_transceiver);
+    (void) app_shmem_video_start(&s_session, &s_video_transceiver);
+    media_started = true;
 
+    /* Pump until: (1) browser tore down (state drops below CONNECTION_READY
+     * because peer_connection.c closes itself on DTLS-close), (2) WSS dies
+     * (signaling_tick returns -1), or (3) external stop. We accept the small
+     * race where state hasn't yet climbed to CONNECTION_READY at entry by
+     * gating on "session not in steady state" only after we've seen it
+     * climb there once.
+     *
+     * Note: peer_connection.c may close the session asynchronously (DTLS
+     * close → HandleDtlsTermination → PeerConnection_CloseSession). After
+     * that returns, state transitions through CLOSING → INITED on the
+     * session task. We exit pump on the first non-READY observation. */
     printf("[webrtc] entering media/signaling pump\n");
+    bool ever_ready = false;
     while (s_streaming_requested) {
         if (0 != signaling_tick(sig)) {
             printf("[webrtc] signaling_tick reported disconnect\n");
+            rc = -1;
+            goto cleanup;
+        }
+
+        PeerConnectionSessionState_t state = s_session.state;
+        if (PEER_CONNECTION_SESSION_STATE_CONNECTION_READY == state) {
+            ever_ready = true;
+        } else if (ever_ready) {
+            printf("[webrtc] peer connection closed (state=%d), ending viewer session\n", (int) state);
             break;
         }
+
         vTaskDelay(pdMS_TO_TICKS(APP_WEBRTC_POLL_IDLE_MS));
     }
     rc = 0;
 
 cleanup:
-    /* Must run before the session/transceiver stack frames die — the
-     * consumer task holds raw pointers to them. */
-    app_shmem_video_stop();
-    if (NULL != sig) {
+    /* Tear down media producer first — its WriteFrame consumer reads
+     * s_session.state which we may force back to INITED next. */
+    if (media_started) {
+        app_shmem_video_stop();
+    }
+
+    /* Detach the ICE_CANDIDATE feed from this peer connection. The signaling
+     * channel itself stays up for the next viewer. */
+    if (peer_attached) {
         signaling_set_peer_connection(sig, NULL);
+        s_signaling_bridge.sig = NULL;
     }
-    signaling_bridge.sig = NULL;
-    if (peer_connection_inited) {
-        (void) PeerConnection_CloseSession(&session);
+
+    /* Trigger close only if the session isn't already idle. peer_connection.c
+     * closes itself on DTLS-peer-close, in which case state may already be
+     * CLOSING or INITED — calling close a second time risks double-free in
+     * SRTP/timer paths. */
+    if (s_session.state != PEER_CONNECTION_SESSION_STATE_INITED &&
+        s_session.state != PEER_CONNECTION_SESSION_STATE_CLOSING) {
+        (void) PeerConnection_CloseSession(&s_session);
     }
-    if (NULL != sig) {
-        signaling_disconnect(sig);
+
+    /* The session task processes ICE_CLOSED asynchronously; wait for it to
+     * reach INITED before the outer loop attempts the next AddTransceiver,
+     * which requires a quiesced struct. */
+    wait_for_session_idle();
+
+    return rc;
+}
+
+/* Outer signaling-session lifetime. Opens WSS once, runs viewer sessions
+ * back-to-back on it, tears down only on WSS-level failure or external stop. */
+static int run_signaling_session(void) {
+    char region_buf[APP_WEBRTC_AWS_REGION_MAXLEN + 1U];
+    char wss_endpoint[APP_WEBRTC_WSS_ENDPOINT_LEN];
+    AwsCreds aws_creds;
+    SignalingHandle sig = NULL;
+    int rc = -1;
+
+    if (0 != populate_creds(&aws_creds, region_buf, sizeof(region_buf))) {
+        return -1;
     }
+    if (0 != signaling_resolve_endpoint(&aws_creds, wss_endpoint, sizeof(wss_endpoint))) {
+        printf("[webrtc] signaling_resolve_endpoint failed\n");
+        return -1;
+    }
+
+    if (0 != signaling_open_session(&aws_creds, wss_endpoint, &sig)) {
+        return -1;
+    }
+
+    while (s_streaming_requested) {
+        int viewer_rc = run_viewer_session(sig);
+        if (viewer_rc < 0) {
+            /* WSS-level failure — rebuild WSS via the outer loop. */
+            break;
+        }
+        if (!s_streaming_requested) {
+            break;
+        }
+        printf("[webrtc] viewer session ended, awaiting next offer on same WSS\n");
+    }
+    rc = 0;
+
+    signaling_disconnect(sig);
     return rc;
 }
 
@@ -473,6 +577,38 @@ static void webrtc_task(void *arg) {
         printf("[webrtc] srtp_init failed: %d (continuing; sessions will fail)\n", (int) srtp_rc);
     }
 
+    /* Initialize the peer-connection session struct once. After this point,
+     * every viewer session reuses the same struct and the same socket-listener
+     * + session tasks spawned inside PeerConnection_Init. */
+    if (0 != session_init_once()) {
+        printf("[webrtc] session init failed, task exiting\n");
+        vTaskDelete(NULL);
+        return;
+    }
+
+#if 0
+TODO: Remove this!
+
+    /* Report the .bss footprint we added by promoting the per-session struct
+     * to file scope. Words = bytes / sizeof(StackType_t); subtract that many
+     * from WEBRTC_TASK_STACK_W to reclaim the heap that previously held the
+     * same allocation on this task's stack. */
+    {
+        unsigned static_bytes = (unsigned)(
+            sizeof(s_session) + sizeof(s_video_transceiver) + sizeof(s_audio_transceiver)
+        );
+        unsigned static_words = static_bytes / (unsigned) sizeof(StackType_t);
+        printf("[webrtc] static session storage: PC=%u + Tx*2=%u = %u bytes (%u words)\n",
+               (unsigned) sizeof(s_session),
+               (unsigned) (sizeof(s_video_transceiver) + sizeof(s_audio_transceiver)),
+               static_bytes,
+               static_words);
+        printf("[webrtc] WEBRTC_TASK_STACK_W is %u words; can drop by ~%u words and still have headroom\n",
+               (unsigned) WEBRTC_TASK_STACK_W,
+               static_words);
+    }
+#endif
+
     for (;;) {
         if (!s_streaming_requested) {
             vTaskDelay(pdMS_TO_TICKS(APP_WEBRTC_POLL_IDLE_MS));
@@ -484,12 +620,12 @@ static void webrtc_task(void *arg) {
             printf("[webrtc] creds_dirty observed at session boundary\n");
         }
 
-        int rc = run_session();
+        int rc = run_signaling_session();
         if (!s_streaming_requested) {
             continue;
         }
 
-        printf("[webrtc] session ended rc=%d, retrying in %d ms\n", rc, (int) APP_WEBRTC_BACKOFF_MS);
+        printf("[webrtc] signaling session ended rc=%d, retrying in %d ms\n", rc, (int) APP_WEBRTC_BACKOFF_MS);
         vTaskDelay(pdMS_TO_TICKS(APP_WEBRTC_BACKOFF_MS));
     }
 }

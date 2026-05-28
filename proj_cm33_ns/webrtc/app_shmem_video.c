@@ -16,6 +16,7 @@
 
 #include "video_ring.h"
 #include "peer_connection.h"
+#include "peer_connection_data_types.h"
 #include "app_shmem_video.h"
 
 
@@ -49,6 +50,18 @@ static void shmem_video_task(void *arg) {
 
     for (;;) {
         if (!shmem_video_running) {
+            vTaskDelay(pdMS_TO_TICKS(APP_SHMEM_VIDEO_POLL_MS));
+            continue;
+        }
+
+        /* Mirror Ameba's OnMediaSinkHook: only push frames when the PC is
+         * fully connected. During setup (state < CONNECTION_READY) or after
+         * DTLS-close (state drops back to INITED/CLOSING), the WriteFrame call
+         * is a no-op that spams the log with "session is not ready"; the
+         * orchestrator will call app_shmem_video_stop() shortly. Until it
+         * does, pulse-yield without consuming the ring slot so the encoder
+         * doesn't get evicted. */
+        if (PEER_CONNECTION_SESSION_STATE_CONNECTION_READY != shmem_video_session->state) {
             vTaskDelay(pdMS_TO_TICKS(APP_SHMEM_VIDEO_POLL_MS));
             continue;
         }
