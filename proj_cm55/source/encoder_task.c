@@ -42,6 +42,11 @@ extern bool active_frame;
  * point without us having to synchronize). */
 static vg_lite_buffer_t encoder_frame;
 
+/* Center-160 H crop stretched 2x H into encoder_frame.  Built once at
+ * task start (encoder_task_start_after_vglite); used per-frame in the
+ * source->encoder_frame blit.  See work/reference/DVP_ISSUE.md Issue 1. */
+static vg_lite_matrix_t encoder_crop_matrix;
+
 /* Snapshot of the predictions that match whatever camera frame we just
  * copied.  Taken under the gfx task so it's self-consistent with the
  * frame being handed off. */
@@ -292,6 +297,10 @@ void encoder_task_start_after_vglite(void) {
         CY_ASSERT(0);
     }
 
+    vg_lite_identity(&encoder_crop_matrix);
+    vg_lite_scale(2.0f, 1.0f, &encoder_crop_matrix);
+    vg_lite_translate(-80.0f, 0.0f, &encoder_crop_matrix);
+
     cy_rslt_t result = cy_rtos_thread_create(
         &encoder_thread, &cm55_encoder_task, ENCODER_TASK_NAME, NULL,
         ENCODER_TASK_STACK_SIZE, ENCODER_TASK_PRIORITY, NULL
@@ -308,11 +317,17 @@ void encoder_on_display_frame_done(prediction_od_t *pred) {
 
     encoder_hook_fires++;
 
-    /* Copy camera frame 1:1 into our owned buffer.  Same format, same
-     * size -- cheap blit, no scale, no format convert. */
+    /* Copy camera frame into our owned buffer with a center-160 H crop
+     * stretched 2x (matrix built once in encoder_task_start_after_vglite).
+     * Softens the OV7675's ~4:1 anamorphic to ~2:1 at the cost of
+     * effective H resolution (160 distinct samples spread across 320
+     * target px).  FILTER_POINT: nearest-neighbor sampling, cheaper than
+     * LINEAR; the visible cost is paired-pixel doubling in H, which the
+     * encoder compresses out cleanly.  See work/reference/DVP_ISSUE.md
+     * Issue 1. */
     vg_lite_error_t vs = vg_lite_blit(
         &encoder_frame, &dvp_bgr565_frames[active_frame],
-        NULL, VG_LITE_BLEND_NONE, 0, VG_LITE_FILTER_POINT
+        &encoder_crop_matrix, VG_LITE_BLEND_NONE, 0, VG_LITE_FILTER_POINT
     );
     if (VG_LITE_SUCCESS != vs) {
         /* Don't spam UART if blit starts failing; just drop the frame. */
