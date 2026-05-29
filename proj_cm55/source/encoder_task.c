@@ -31,15 +31,27 @@
  * output without a rebuild. */
 bool encoder_draw_overlays = true;
 
-/* Camera source buffers owned by main.c. */
-extern vg_lite_buffer_t dvp_bgr565_frames[NUM_IMAGE_BUFFERS];
-extern bool active_frame;
+/* Stable per-frame camera snapshot owned by lcd_task.  Filled in
+ * draw() Stage 1 (identity blit from dvp_bgr565_frames[active_frame]).
+ *
+ * We source the encoder blit from this rather than dvp_bgr565_frames
+ * directly for two reasons:
+ *   1. Consistency -- inference already reads bgr565 (lcd_task.c's
+ *      ifx_image_conv_RGB565_to_RGB888_i8 call), so encoder + display +
+ *      inference all consume the same per-frame snapshot.
+ *   2. Avoids a second AXI read of the buffer the AXIDMAC is concurrently
+ *      writing -- subjective reduction in the DVP line-corruption
+ *      artifacts observed when WebRTC is streaming.
+ *
+ * Revert option: change &bgr565 below to &dvp_bgr565_frames[active_frame]
+ * (and re-add the externs) if the line-corruption root cause is fixed
+ * upstream and you'd rather pull straight from the live DMA buffer.
+ * See work/reference/LINE_CORRUPTION_ISSUE.md. */
+extern vg_lite_buffer_t bgr565;
 
-/* Dedicated encoder frame.  Separate from dvp_bgr565_frames so we can
- * scribble overlays on it without corrupting what inference and the
- * display re-read every frame, and so its lifetime is owned by the
- * encoder task (the DVP ISR is free to flip dvp_bgr565_frames at any
- * point without us having to synchronize). */
+/* Dedicated encoder frame.  Separate from bgr565 so we can scribble
+ * overlays on it without corrupting what inference re-reads every
+ * frame, and so its lifetime is owned by the encoder task. */
 static vg_lite_buffer_t encoder_frame;
 
 /* Center-160 H crop stretched 2x H into encoder_frame.  Built once at
@@ -326,7 +338,7 @@ void encoder_on_display_frame_done(prediction_od_t *pred) {
      * encoder compresses out cleanly.  See work/reference/DVP_ISSUE.md
      * Issue 1. */
     vg_lite_error_t vs = vg_lite_blit(
-        &encoder_frame, &dvp_bgr565_frames[active_frame],
+        &encoder_frame, &bgr565,
         &encoder_crop_matrix, VG_LITE_BLEND_NONE, 0, VG_LITE_FILTER_POINT
     );
     if (VG_LITE_SUCCESS != vs) {
