@@ -90,6 +90,12 @@ void encoder_count_display_present(void) { encoder_disp_done++; }
 #define ENCODER_TARGET_FPS      (10)
 #define ENCODER_GOP             (60)
 #define ENCODER_BITRATE_BPS     (400 * 1000)
+/* Rate-limit how often the gfx hook hands a frame to the encoder.  This is
+ * intentionally lower than the camera/display cadence so skipped frames avoid
+ * the encoder hook blit, the BGR565->I420 conversion, H.264 encode, and ring
+ * publish entirely.  Tune for DVP corruption experiments. */
+#define ENCODER_MAX_INPUT_FPS   (2U)
+#define ENCODER_MIN_INPUT_MS    (1000U / ENCODER_MAX_INPUT_FPS)
 
 __attribute__((section(".cy_socmem_data"), aligned(16)))
 static uint8_t encoder_persist[ENCODER_PERSIST_BYTES];
@@ -104,6 +110,8 @@ static H264E_create_param_t encoder_create_param;
 static H264E_run_param_t encoder_run_param;
 static H264E_io_yuv_t encoder_io;
 static uint32_t encoder_frame_seq = 0;
+static bool encoder_input_seen = false;
+static uint32_t encoder_last_input_ms = 0;
 
 /* Overlay colors, matching lcd_task.c's palette: {black, green, red, blue}. */
 #define BGR565_PACK(r, g, b) ((uint16_t)((((r) & 0xF8) << 8) | (((g) & 0xFC) << 3) | (((b) & 0xF8) >> 3)))
@@ -328,6 +336,13 @@ void encoder_on_display_frame_done(prediction_od_t *pred) {
     if (!encoder_ready) return;
 
     encoder_hook_fires++;
+
+    uint32_t now_ms = (uint32_t)ifx_time_get_ms_f();
+    if (encoder_input_seen && ((uint32_t)(now_ms - encoder_last_input_ms) < ENCODER_MIN_INPUT_MS)) {
+        return;
+    }
+    encoder_input_seen = true;
+    encoder_last_input_ms = now_ms;
 
     /* Copy camera frame into our owned buffer with a center-160 H crop
      * stretched 2x (matrix built once in encoder_task_start_after_vglite).
