@@ -39,7 +39,7 @@ typedef enum UserInputYnStatus {
 static UserInputYnStatus user_input_status = APP_INPUT_NONE;
 
 static bool is_demo_mode = false;
-static int reporting_interval = 2000;
+static int reporting_interval = 5000;
 
 
 #define TEST_BLOCK_SIZE  10 * 1024
@@ -185,8 +185,6 @@ static void on_command(IotclC2dEventData data) {
 
 static cy_rslt_t publish_telemetry(void) {
     ipc_payload_t payload = {0};
-    // useful fro debugging - making sure we have te latest data:
-    // printf("Has IPC Data: %s\n", cm33_ipc_has_received_message() ? "true" : "false");
     cm33_ipc_safe_get_and_clear_cached_detection(&payload);
     IotclMessageHandle msg = iotcl_telemetry_create();
     iotcl_telemetry_set_string(msg, "version", APP_VERSION);
@@ -351,8 +349,6 @@ void app_task(void *pvParameters) {
                 c->expiration_str, iotconnect_sdk_aws_creds_seconds_until_expiry()
             );
         }
-        // WebRTC pre-reqs satisfied: Wi-Fi up, NTP synced, SDK init OK, creds cached.
-        // _start runs the REST steps synchronously here, then flips the task.
         app_webrtc_start();
     }
     
@@ -370,10 +366,6 @@ void app_task(void *pvParameters) {
                 break;
                 }
             iotconnect_sdk_poll_inbound_mq(reporting_interval);
-        }
-        while (true) {
-             // HACK: Block here for now so we can see WebRTC logsa
-            vTaskDelay(1000);
         }
         iotconnect_sdk_disconnect();
     }
