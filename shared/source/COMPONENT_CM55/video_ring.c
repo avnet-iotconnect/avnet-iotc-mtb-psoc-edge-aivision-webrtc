@@ -57,7 +57,6 @@ void video_ring_init(void) {
     ring_header->magic = VIDEO_RING_MAGIC;
 
     clean_range((const void *)ring_header, sizeof(*ring_header));
-    clean_range(ring_slots, VIDEO_RING_SLOTS * sizeof(video_ring_slot_t));
 }
 
 bool video_ring_try_publish(
@@ -100,11 +99,13 @@ bool video_ring_try_publish(
     slot->is_idr = is_idr ? 1U : 0U;
     slot->seq = seq;
 
-    // Order metadata writes ahead of the available flip, then flush so CM33 sees it.
-    clean_range(slot, offsetof(video_ring_slot_t, payload) + coded_size);
+    // Publish with a single clean of the written slot range after available=1.
+    // This still flushes metadata + payload + the ownership flag, while avoiding
+    // the redundant pre-available clean and the second tiny available-only clean.
     __DMB();
     slot->available = 1U;
-    clean_range(slot, sizeof(slot->available));
+    __DMB();
+    clean_range(slot, offsetof(video_ring_slot_t, payload) + coded_size);
 
     producer_stats.published++;
     producer_idx = 1U - producer_idx;
