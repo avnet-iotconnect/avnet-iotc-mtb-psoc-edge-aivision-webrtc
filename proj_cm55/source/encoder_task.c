@@ -94,7 +94,7 @@ void encoder_count_display_present(void) { encoder_disp_done++; }
  * intentionally lower than the camera/display cadence so skipped frames avoid
  * the encoder hook blit, the BGR565->I420 conversion, H.264 encode, and ring
  * publish entirely.  Tune for DVP corruption experiments. */
-#define ENCODER_MAX_INPUT_FPS   (2U)
+#define ENCODER_MAX_INPUT_FPS   (3U)
 #define ENCODER_MIN_INPUT_MS    (1000U / ENCODER_MAX_INPUT_FPS)
 
 __attribute__((section(".cy_socmem_data"), aligned(16)))
