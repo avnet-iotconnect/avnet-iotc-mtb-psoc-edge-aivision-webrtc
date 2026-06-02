@@ -179,22 +179,25 @@ static void bgr565_to_i420(
             uint16_t p10 = row1[i + 0];
             uint16_t p11 = row1[i + 1];
 
-            /* BGR565: bbbbb gggggg rrrrr (high-to-low bits in word) */
-            int b00 = (p00 & 0xF800) >> 8;  /* expand 5 -> 8 by left shift */
+            /* VG_LITE_BGR565 stores channels LSB->MSB as B,G,R, so in the
+             * 16-bit word (MSB->LSB) the layout is rrrrr gggggg bbbbb:
+             * R is the top 5 bits, B the low 5.  (Matches BGR565_PACK above
+             * and the colors the LCD renders.) */
+            int r00 = (p00 & 0xF800) >> 8;  /* top 5 bits = R, expand 5 -> 8 */
             int g00 = (p00 & 0x07E0) >> 3;
-            int r00 = (p00 & 0x001F) << 3;
+            int b00 = (p00 & 0x001F) << 3;  /* low 5 bits = B, expand 5 -> 8 */
 
-            int b01 = (p01 & 0xF800) >> 8;
+            int r01 = (p01 & 0xF800) >> 8;
             int g01 = (p01 & 0x07E0) >> 3;
-            int r01 = (p01 & 0x001F) << 3;
+            int b01 = (p01 & 0x001F) << 3;
 
-            int b10 = (p10 & 0xF800) >> 8;
+            int r10 = (p10 & 0xF800) >> 8;
             int g10 = (p10 & 0x07E0) >> 3;
-            int r10 = (p10 & 0x001F) << 3;
+            int b10 = (p10 & 0x001F) << 3;
 
-            int b11 = (p11 & 0xF800) >> 8;
+            int r11 = (p11 & 0xF800) >> 8;
             int g11 = (p11 & 0x07E0) >> 3;
-            int r11 = (p11 & 0x001F) << 3;
+            int b11 = (p11 & 0x001F) << 3;
 
             /* BT.601 limited-range: Y = 0.257R + 0.504G + 0.098B + 16 */
             y0[i + 0] = clamp_u8((66 * r00 + 129 * g00 +  25 * b00 + 128 + (16 << 8)) >> 8);
