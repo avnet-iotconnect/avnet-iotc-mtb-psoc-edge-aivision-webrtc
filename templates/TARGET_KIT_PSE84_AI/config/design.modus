@@ -3633,7 +3633,7 @@
                         <Param id="offset" value="0x00002000"/>
                         <Param id="regionId" value="m33s_code"/>
                         <Param id="reservedGuid" value="USER_DEFINED"/>
-                        <Param id="size" value="0x00035000"/>
+                        <Param id="size" value="0x00004000"/>
                     </Parameters>
                 </Personality>
                 <Personality template="memory_region_data" version="1.0" instance="ddkQGS-VO4I">
@@ -3642,10 +3642,10 @@
                         <Param id="description" value="CM33 secure data region"/>
                         <Param id="domain" value="7cPl230VJyc"/>
                         <Param id="memoryId" value="SRAM"/>
-                        <Param id="offset" value="0x00037000"/>
+                        <Param id="offset" value="0x00006000"/>
                         <Param id="regionId" value="m33s_data"/>
                         <Param id="reservedGuid" value="USER_DEFINED"/>
-                        <Param id="size" value="0x00021000"/>
+                        <Param id="size" value="0x00006000"/>
                     </Parameters>
                 </Personality>
                 <Personality template="memory_region_data" version="1.0" instance="0-n6OQnErF0">
@@ -3654,10 +3654,10 @@
                         <Param id="description" value="CM33 code region"/>
                         <Param id="domain" value="Xo07Phg6oz8"/>
                         <Param id="memoryId" value="SRAM"/>
-                        <Param id="offset" value="0x00058000"/>
+                        <Param id="offset" value="0x0000C000"/>
                         <Param id="regionId" value="m33_code"/>
                         <Param id="reservedGuid" value="USER_DEFINED"/>
-                        <Param id="size" value="0x00065000"/>
+                        <Param id="size" value="0x00020000"/>
                     </Parameters>
                 </Personality>
                 <Personality template="memory_region_data" version="1.0" instance="rF4o_hNHwc0">
@@ -3666,10 +3666,10 @@
                         <Param id="description" value="CM33 data region"/>
                         <Param id="domain" value="Rj_rAX1eb8U"/>
                         <Param id="memoryId" value="SRAM"/>
-                        <Param id="offset" value="0x000BD000"/>
+                        <Param id="offset" value="0x0002C000"/>
                         <Param id="regionId" value="m33_data"/>
                         <Param id="reservedGuid" value="USER_DEFINED"/>
-                        <Param id="size" value="0x00040000"/>
+                        <Param id="size" value="0x000D1000"/>
                     </Parameters>
                 </Personality>
                 <Personality template="memory_region_data" version="1.0" instance="DhUV7mLaCmM">
