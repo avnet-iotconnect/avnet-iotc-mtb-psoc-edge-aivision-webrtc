@@ -103,6 +103,17 @@ DEFINES+=$(MODEL_SELECTION)
 # Required when MBEDTLS_HAVE_TIME_DATE is set in mbedtls_user_config.h
 DEFINES+=MBEDTLS_PLATFORM_MS_TIME_ALT
 
+# Silence the "MEM_SIZE redefined" warning. The GFXSS/DCNano vendor header
+# (viv_dc_options.h) unconditionally does `#define MEM_SIZE 0x00000000`, which
+# is dragged into lwIP TUs via cybsp.h and collides with lwIP's MEM_SIZE.
+# lwIP's MEM_SIZE is dead here anyway (MEM_LIBC_MALLOC==1 on this build, so lwIP
+# uses libc malloc). Predefining it to the graphics header's exact token makes
+# lwIP's #ifndef default skip and the graphics #define an identical (silent)
+# redefinition. Vendor headers stay untouched. If this ever moves to the
+# __DCACHE_PRESENT lwIP-heap path, revisit -- lwipopts would then set MEM_SIZE.
+# Test future releases by removing this define as the bug may have been addressed at Infineon
+DEFINES+=MEM_SIZE=0x00000000
+
 SEARCH+=../shared/retarget_io/
 
 # Select softfp or hardfp floating point. Default is softfp.
