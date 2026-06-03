@@ -166,20 +166,26 @@ endif
 ################################################################################
 DEFINES+=WEBRTC_HOOKS
 
-# minih264 single-header library: only minih264e.h is consumed (included
-# from encoder_task.c).  Everything else in the submodule (reference test
-# app, POSIX glue, NEON asm, scripts, sample inputs) is not buildable for
-# Cortex-M55 / bare-metal -- keep MTB auto-discovery out of those.
+# minih264 single-header H.264 encoder. Only minih264e.h is consumed; the
+# implementation is pulled in by source/encoder_task.c via
+# MINIH264_IMPLEMENTATION. The library is vendored through deps/minih264.mtb
+# (upstream commit b0baea7a) into mtb_shared and reaches the build via
+# SEARCH_MTB_MK auto-discovery.
+#
+# We build NONE of the upstream tree: it ships a reference test app, POSIX glue
+# (system.c), NEON asm, scripts and sample vectors that don't build for
+# bare-metal CM55, and -- critically -- our minih264e.h carries two
+# fork-aivision patches (bare-metal ARM __BYTE_ORDER + arm-none-eabi ACLE
+# intrinsics) that are not upstream. So ignore the whole upstream copy and
+# overlay our patched header from patches/minih264/ (see its README).
+CY_IGNORE+=$(SEARCH_minih264)
+# Stale pre-.mtb git-submodule copy: ignore so it can't collide during the
+# submodule->mtb transition. Harmless no-op once the submodule is removed.
+CY_IGNORE+=third_party/minih264
+INCLUDES+=patches/minih264
+# encode_benchmark is a host-side micro-benchmark, not firmware.
 CY_IGNORE+=source/encode_benchmark.c
 CY_IGNORE+=source/encode_benchmark.h
-CY_IGNORE+=third_party/minih264/minih264e_test.c
-CY_IGNORE+=third_party/minih264/system.c
-CY_IGNORE+=third_party/minih264/system.h
-CY_IGNORE+=third_party/minih264/asm
-CY_IGNORE+=third_party/minih264/scripts
-CY_IGNORE+=third_party/minih264/vectors
-CY_IGNORE+=third_party/minih264/images
-INCLUDES+=third_party/minih264
 
 # RPS_DEMO_MODE = ENABLED if user wants LED indications for detections for default RPS model
 RPS_DEMO_MODE = DISABLED
