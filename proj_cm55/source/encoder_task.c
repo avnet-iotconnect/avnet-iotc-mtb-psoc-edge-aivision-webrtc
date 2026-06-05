@@ -87,14 +87,14 @@ void encoder_count_display_present(void) { encoder_disp_done++; }
 #define ENCODER_SCRATCH_BYTES   (200 * 1024)
 #define ENCODER_I420_BYTES      ((ENCODER_FRAME_WIDTH) * (ENCODER_FRAME_HEIGHT) * 3 / 2)
 
-#define ENCODER_TARGET_FPS      (10)
+#define ENCODER_TARGET_FPS      (5)
 #define ENCODER_GOP             (60)
 #define ENCODER_BITRATE_BPS     (400 * 1000)
 /* Rate-limit how often the gfx hook hands a frame to the encoder.  This is
  * intentionally lower than the camera/display cadence so skipped frames avoid
  * the encoder hook blit, the BGR565->I420 conversion, H.264 encode, and ring
  * publish entirely.  Tune for DVP corruption experiments. */
-#define ENCODER_MAX_INPUT_FPS   (3U)
+#define ENCODER_MAX_INPUT_FPS   (4U)
 #define ENCODER_MIN_INPUT_MS    (1000U / ENCODER_MAX_INPUT_FPS)
 
 __attribute__((section(".cy_socmem_data"), aligned(16)))
