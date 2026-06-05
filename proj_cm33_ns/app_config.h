@@ -14,7 +14,7 @@
 #define IOTCONNECT_ENV  "your-env"
 
 // If Device Unique ID (DUID) is not provided, a generated DUID will be used using the below prefix
-#define IOTCONNECT_DUID "nik-e84-webrtc2"
+#define IOTCONNECT_DUID ""
 // prefix for the auto-generated name based on chip HWUID that will be used if IOTCONNECT_DUID is not supplied
 #define IOTCONNECT_DUID_PREFIX "psoc-edge-aiv-"
 
