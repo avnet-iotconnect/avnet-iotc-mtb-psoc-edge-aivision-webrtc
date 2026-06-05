@@ -100,7 +100,6 @@ static void shmem_video_task(void *arg) {
                 (unsigned)frames_total, (unsigned)bytes_total, (unsigned)idr_total,
                 (unsigned)write_fail_total, (unsigned)window_frames, (unsigned)window_bytes
             );
-            memory_test();
             window_frames = 0;
             window_bytes = 0;
         }

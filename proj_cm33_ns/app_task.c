@@ -39,28 +39,7 @@ typedef enum UserInputYnStatus {
 static UserInputYnStatus user_input_status = APP_INPUT_NONE;
 
 static bool is_demo_mode = false;
-static int reporting_interval = 5000;
-
-
-#define TEST_BLOCK_SIZE  10 * 1024
-#define TEST_BLOCK_COUNT 30
-void memory_test() {
-    void *blocks[TEST_BLOCK_COUNT];
-    int i = 0;
-    for (; i < TEST_BLOCK_COUNT; i++) {
-        void *ptr = malloc(TEST_BLOCK_SIZE);
-        // printf("0x%x\r\n", (unsigned int) ptr);
-        blocks[i] = ptr;
-        if (!ptr) {
-            break;
-        }
-    }
-    printf("====Allocated %d blocks of size %d (of max %d)===\r\n", i, TEST_BLOCK_SIZE, TEST_BLOCK_COUNT);
-    for (int j = 0; j < i; j++) {
-        free(blocks[j]);
-    }
-}
-
+static int reporting_interval = 2000;
 
 /////////////////////////////////////////////////////////////////////////////
 
@@ -312,7 +291,6 @@ void app_task(void *pvParameters) {
     printf("ENV: %s\n", config.env);
     printf("WiFi SSID: %s\n", app_eeprom_data_get_wifi_ssid(WIFI_SSID));
 
-    memory_test();
 
     if (strlen(IOTCONNECT_DEVICE_CERT) > 0) {
         printf("Device certificate is set in app_config.h\n");
@@ -336,8 +314,6 @@ void app_task(void *pvParameters) {
 
     // Smoke-test the AWS creds mTLS flow before connecting MQTT.
     int creds_status = iotconnect_sdk_obtain_aws_creds();
-
-    memory_test();
 
     if (0 != creds_status) {
         printf("AWS creds obtain failed (status=%d).\n", creds_status);
