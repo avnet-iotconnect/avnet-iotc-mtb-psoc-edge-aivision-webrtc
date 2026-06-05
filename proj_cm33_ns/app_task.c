@@ -181,6 +181,8 @@ static void user_input_yn_task (void *pvParameters) {
 	TaskHandle_t *parent_task = pvParameters;
 
 	user_input_status = APP_INPUT_NONE;
+    // This happens probably due to UART getchar() spamming:
+    printf("--- NOTE: You may notice temporary LCD corruption during this prompt ---\n");
     printf("Do you wish to configure the device?(y/[n]):\n>");
 
     int ch = getchar();
