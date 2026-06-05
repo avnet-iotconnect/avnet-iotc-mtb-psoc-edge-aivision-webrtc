@@ -77,6 +77,8 @@ static int32_t RecvPacketUdp( IceControllerSocketContext_t * pSocketContext,
                    ( rxIp >> 8 ) & 0xFFu,
                    rxIp & 0xFFu,
                    ( unsigned ) rxPort ) );
+        ( void ) rxPort; // depending on log level may cause warnings
+        ( void ) rxIp;
     }
     else if( ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK )
     {
@@ -132,7 +134,8 @@ static int32_t RecvPacketUdp( IceControllerSocketContext_t * pSocketContext,
     return ret;
 }
 
-static int32_t RecvPacketTls( IceControllerSocketContext_t * pSocketContext,
+// NOTE: This was static in original code. Just hacking to avoid warnings:
+int32_t RecvPacketTls( IceControllerSocketContext_t * pSocketContext,
                               uint8_t * pBuffer,
                               size_t bufferSize,
                               IceEndpoint_t * pRemoteEndpoint )
