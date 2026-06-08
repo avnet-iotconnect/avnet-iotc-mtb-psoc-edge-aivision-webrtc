@@ -398,8 +398,8 @@ void cm55_encoder_task(void *arg) {
     float sum_encode = 0.0f;
     float sum_total = 0.0f;
     float t_prev_report = ifx_time_get_ms_f();
-
     int max_debug_messages = 2;
+
     for (;;) {
         cy_rslt_t result = cy_rtos_semaphore_get(&encoder_semaphore, 0xFFFFFFFF);
         if (CY_RSLT_SUCCESS != result) {
@@ -412,6 +412,7 @@ void cm55_encoder_task(void *arg) {
         bgr565_to_i420((const uint16_t *)encoder_frame.memory,
             ENCODER_FRAME_WIDTH, ENCODER_FRAME_HEIGHT,
             encoder_io.yuv[0], encoder_io.yuv[1], encoder_io.yuv[2]);
+
         float t_after_convert = ifx_time_get_ms_f();
 
         /* 2. Encode.  frame_type=DEFAULT lets minih264 emit a keyframe at
@@ -424,6 +425,7 @@ void cm55_encoder_task(void *arg) {
             (H264E_persist_t *)encoder_persist, (H264E_scratch_t *)encoder_scratch,
             &encoder_run_param, &encoder_io, &coded_data, &coded_size
         );
+
         float t_after_encode = ifx_time_get_ms_f();
 
         if (status != 0) {
@@ -443,6 +445,8 @@ void cm55_encoder_task(void *arg) {
 
         encoder_frame_seq++;
 
+        // re-enable this block if needding to see encoding FPS and similar timing stats
+#if 0
         sum_convert += (t_after_convert - t_start);
         sum_encode += (t_after_encode - t_after_convert);
         sum_total += (t_after_encode - t_start);
@@ -451,7 +455,7 @@ void cm55_encoder_task(void *arg) {
 
         if (frames >= 30 && max_debug_messages > 0) {
             max_debug_messages--;
-            
+
             float now = ifx_time_get_ms_f();
             float window = now - t_prev_report;
             float fps = (window > 0.0f) ? (1000.0f * frames / window) : 0.0f;
@@ -489,5 +493,11 @@ void cm55_encoder_task(void *arg) {
             sum_total = 0.0f;
             t_prev_report = now;
         }
+#else
+        (void)frames; (void)total_bytes;
+        (void)sum_convert; (void)sum_encode; (void)sum_total;
+        (void)t_prev_report; (void)max_debug_messages;
+        (void)t_after_convert; (void)t_after_encode;
+#endif
     }
 }
