@@ -386,12 +386,8 @@ int main ( void )
     printf("Build Version: %d.%d.%d\r\n", MAJOR_VERSION, MINOR_VERSION, PATCH_VERSION);
     printf("Build Date: %s\r\n", __DATE__);
     printf("Build Time: %s\r\n", __TIME__);
-    printf("Following cameras are supported:\r\n");
-    printf("1. HBVCAM OV7675 0.3MP Camera: https://www.hbvcamera.com/0-3mp-pixel-usb-cameras/hbvcam-ov7675-0.3mp-mini-laptop-camera-module.html\r\n");
-    printf("2. Logitech C920 HD Pro Webcam: https://www.logitech.com/en-ch/shop/p/c920-pro-hd-webcam\r\n");
-    printf("3. Logitech C920e Business Webcam: https://www.logitech.com/en-ch/products/webcams/c920e-business-webcam\r\n");
-    printf("4. HBVCAM OS02F10 2MP Camera: https://www.hbvcamera.com/2-mega-pixel-usb-cameras/2mp-1080p-auto-focus-hd-usb-camera-module-for-atm-machine.html\r\n");
-    printf("5. OV7675 0.3MP DVP Camera: https://blog.arducam.com/products/camera-breakout-board/0-3mp-ov7675\r\n");
+    printf("Following cameras is supported:\r\n");
+    printf("OV7675 0.3MP DVP Camera: https://blog.arducam.com/products/camera-breakout-board/0-3mp-ov7675\r\n");
     printf("\r\n*************************************************************************************\r\n");
 
 
