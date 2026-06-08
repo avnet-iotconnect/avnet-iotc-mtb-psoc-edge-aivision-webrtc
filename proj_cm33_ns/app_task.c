@@ -231,7 +231,7 @@ void app_task(void *pvParameters) {
         printf("Failed to initialize EEPROM. Cannot continue.\n");
         goto exit_cleanup;
     } else {
-        printf("EEPROM data loaded successfully. Data is %s.\n", app_eeprom_data_is_valid() ? "valid" : "invalid");
+        printf("EEPROM initialized. Data is %s.\n", app_eeprom_data_is_valid() ? "valid" : "invalid");
     }
 
     IotConnectClientConfig config;
@@ -298,6 +298,7 @@ void app_task(void *pvParameters) {
         printf("Device certificate is set in app_config.h\n");
     } else if (strlen(app_eeprom_data_get_certificate(IOTCONNECT_DEVICE_CERT)) > 0) {
         printf("Device certificate is stored in EEPROM\n");
+        printf("Device certificate:\n%s\n", app_eeprom_data_get_certificate(IOTCONNECT_DEVICE_CERT));
     }
 
     // This will not return if it fails
