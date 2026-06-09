@@ -158,6 +158,7 @@ WiFi Password:
 
 You should see the device write the configured values and reset. On subsequent boot the device configration and
 the certificate will be displayed:
+
 ```
 Current Settings:
 Platform: AWS
@@ -178,6 +179,7 @@ jx8ZHQgzNRiywiDxV2LEgGgCIFJuyFsMp3VfOqp0QoRopL5S9XTaPwMDK16ouffu
 UQRV
 -----END CERTIFICATE-----
 ```
+
 * This information will always be displayed on boot-up. You will also have an option to enter "y" 
 at the *Do you wish to configure the device?* prompt to re-configure the values.
 * If you wish to re-generate the certificate, issue *Terminal -> Run Task -> Erase* and then program the firmware again.

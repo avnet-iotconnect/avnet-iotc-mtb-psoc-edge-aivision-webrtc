@@ -57,16 +57,16 @@ To trigger the certificate to be re-generated, click the Programmer's *Erase* bu
 >>: {"d":[{"d":{"version":"1.0.0","random":48,"class_id":0,"class":"unlabelled","event_detected":false}}]}
 ```
 
-- In your /IOTCONNECT Web UI, navigate to **Video Streaming** and click the **Start**. Allow up to 20 seconds for the stream to start. 
-You should be able to see the video stream and the inference highlighting the detected gesture as a colored square.
+- In your /IOTCONNECT Web UI, navigate to **Video Streaming** and click the **Start**. Allow some time for the stream to start. 
 
-- Placing your hand in the DVP camera's field of view will trigger the inference:
+- You should be able to see the video stream and the inference highlighting the detected gesture as a colored square.
+Placing your hand in the DVP camera's field of view will trigger the inference:
 
 | Gesture  | Class ID | Color  | Description               |
 |:---------|----------|--------|:--------------------------|
 | Scissors | 1        | Green  | Two fingers extended      |
-| Paper    | 1        | Orange | Open hand, fingers spread |
-| Rock     | 1        | Blue   | Clenched fist             |
+| Paper    | 2        | Orange | Open hand, fingers spread |
+| Rock     | 3        | Blue   | Clenched fist             |
 
 - The following commands can be sent to the device using the /IOTCONNECT Web UI:
 
@@ -79,7 +79,7 @@ You should be able to see the video stream and the inference highlighting the de
 ## Known Issues and Limitations
 
 - H.264 encoding performance degradation is observed with the LLVM toolchain compared to GCC.
-- Several display corruption issues affecting both the LCD and WebRTC streams have been observed.
+- Display corruption issues affecting both the LCD and WebRTC streams have been observed.
 We suspect that this issue has to do with UART and GPU contention while CM33 is active.
   - Severe LCD corruption during the Device Configuration setup or while the *Do you wish to configure the board* prompt is displayed on the screen. 
   - Occasional horizontal colored lines appearing on LCD and WebRTC stream.
