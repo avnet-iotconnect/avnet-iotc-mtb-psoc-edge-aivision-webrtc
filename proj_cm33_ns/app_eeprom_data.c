@@ -221,6 +221,7 @@ void app_eeprom_data_do_user_input(IotcX509CredentialsGenerate x509_creds_genera
 
 	printf("\n===============================================================\n");
 	printf("Please enter your device configuration\n");
+	printf("--- NOTE: You may LCD corruption during this setup process ---\n");
 
 	char platform_str[sizeof("aws")];
 

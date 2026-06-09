@@ -56,12 +56,25 @@ To trigger the certificate to be re-generated, click the Programmer's *Erase* bu
 ```
 >>: {"d":[{"d":{"version":"1.0.0","random":48,"class_id":0,"class":"unlabelled","event_detected":false}}]}
 ```
+
+- In your /IOTCONNECT Web UI, navigate to **Video Streaming** and click the **Start**. Allow up to 20 seconds for the stream to start. 
+You should be able to see the video stream and the inference highlighting the detected gesture as a colored square.
+
+- Placing your hand in the DVP camera's field of view will trigger the inference:
+
+| Gesture  | Class ID | Color  | Description               |
+|:---------|----------|--------|:--------------------------|
+| Scissors | 1        | Green  | Two fingers extended      |
+| Paper    | 1        | Orange | Open hand, fingers spread |
+| Rock     | 1        | Blue   | Clenched fist             |
+
 - The following commands can be sent to the device using the /IOTCONNECT Web UI:
 
-    | Command                  | Argument Type     | Description                                                                                             |
-    |:-------------------------|-------------------|:--------------------------------------------------------------------------------------------------------|
-    | `board-user-led`         | String (on/off)   | Turn the board LED on or off (Red LED on the EVK, Green on the AI)                                      |
-    | `set-reporting-interval` | Number (eg. 2000) | Set telemetry reporting interval in milliseconds.  By default, the application will report every 2000ms |
+| Command                  | Argument Type     | Description                                                                                             |
+|:-------------------------|-------------------|:--------------------------------------------------------------------------------------------------------|
+| `board-user-led`         | String (on/off)   | Turn the board LED on or off (Red LED on the EVK, Green on the AI)                                      |
+| `set-reporting-interval` | Number (eg. 2000) | Set telemetry reporting interval in milliseconds.  By default, the application will report every 2000ms |
+
 
 ## Known Issues and Limitations
 
@@ -70,4 +83,4 @@ To trigger the certificate to be re-generated, click the Programmer's *Erase* bu
 We suspect that this issue has to do with UART and GPU contention while CM33 is active.
   - Severe LCD corruption during the Device Configuration setup or while the *Do you wish to configure the board* prompt is displayed on the screen. 
   - Occasional horizontal colored lines appearing on LCD and WebRTC stream.
-  - Due to this, the H.264 encoding has been artificially capped at around 3FPS, while the encoding + LCD + inference performance is 5+ FPFS and close to the 6.25 FPS rate of the DVP camera stream. 
+  - Due to this, the H.264 encoding has been artificially capped at around 3FPS, while the encoding + LCD + inference performance is 5+ FPFS and close to the 6.25 FPS rate of the DVP camera stream.

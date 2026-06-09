@@ -297,7 +297,6 @@ void app_task(void *pvParameters) {
     if (strlen(IOTCONNECT_DEVICE_CERT) > 0) {
         printf("Device certificate is set in app_config.h\n");
     } else if (strlen(app_eeprom_data_get_certificate(IOTCONNECT_DEVICE_CERT)) > 0) {
-        printf("Device certificate is stored in EEPROM\n");
         printf("Device certificate:\n%s\n", app_eeprom_data_get_certificate(IOTCONNECT_DEVICE_CERT));
     }
 
