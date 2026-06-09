@@ -69,6 +69,13 @@ If so, click *Yes, I trust the authors*.
 - Build the project, select *Terminal -> Run Task*. Then select *Build* from the dropdown.
 - To program the project onto the board, connect the board, 
 select *Terminal -> Run Task*. Then select *Program* from the dropdown.
+
+> [!IMPORTANT]
+> On first boot, the device will enter the Device Configuration process via the USB Terminal
+> During this interactive setup you will notice severe corruption on the LCD display.
+> This is a known issue. 
+> Completing the configuration process and rebooting the device will resolve the corruption issue will be aparent only for several seconds during the "reconfigure the device" prompt on each boot.
+
 - If you wish to debug the project, select *Run > Start Debugging* instead.
 - (Optional) While we recommend using the runtime device configuration, please note that the configuration
 can be hard-coded in the app_config.h and wifi_config.h files. The device can be created first in /IOTCONNECCT and the 
