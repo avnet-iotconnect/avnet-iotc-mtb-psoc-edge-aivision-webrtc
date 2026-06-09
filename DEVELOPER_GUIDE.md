@@ -27,7 +27,7 @@ Firmware logs will be available on that COM port.
   
    ** Figure 1. Connecting the AI Kit board **
 
-   ![Figure 1](images/setup-2x.jpg)
+   ![Figure 1](images/setup.jpg)
 
 ## Building the Software
 
