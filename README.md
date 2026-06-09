@@ -1,171 +1,109 @@
-# PSOC&trade; Edge MCU: Machine learning – DEEPCRAFT&trade; deploy vision
+## Avnet PSOC™ Edge DEEPCRAFT™ Ready Models
 
-This code example demonstrates a real-time hand gesture detection that uses a USB camera to capture live video and a DEEPCRAFT&trade; Studio object detection model to detect hand gestures (rock, paper, or scissors) in the video feed using ModusToolbox&trade;. The detected gestures are highlighted by drawing a bounding box around the gesture and displaying the corresponding text (rock, paper, or scissors) in a text box on the display and on a terminal.
+This demo project is the integration of Infineon's 
+[PSOC&trade; Edge MCU: DEEPCRAFT&trade; Ready Model deployment](https://github.com/Infineon/mtb-example-psoc-edge-ml-deepcraft-deploy-ready-model/tree/release-v1.2.0)
+and [Avnet /IOTCONNECT ModusToolbox&trade; SDK](https://github.com/avnet-iotconnect/avnet-iotc-mtb-sdk). 
 
-This code example has a three-project structure: CM33 secure, CM33 non-secure, and CM55 projects. All three projects are programmed to the external QSPI flash and executed in Execute in Place (XIP) mode. Extended boot launches the CM33 secure project from a fixed location in the external flash, which then configures the protection settings and launches the CM33 non-secure application. Additionally, CM33 non-secure application enables CM55 CPU and launches the CM55 application.
+The project includes various DEEPCRAFT&trade; Ready Model which are chosen at compile time by 
+selecting the model in [common.mk](common.mk)
 
-[View this README on GitHub.](https://github.com/Infineon/mtb-example-psoc-edge-ml-deepcraft-deploy-vision)
+The audio models detect specific sounds:
+- Baby cry
+- Cough
+- Alarm
 
-[Provide feedback on this code example.](https://yourvoice.infineon.com/jfe/form/SV_1NTns53sK2yiljn?Q_EED=eyJVbmlxdWUgRG9jIElkIjoiQ0UyNDIxNDUiLCJTcGVjIE51bWJlciI6IjAwMi00MjE0NSIsIkRvYyBUaXRsZSI6IlBTT0MmdHJhZGU7IEVkZ2UgTUNVOiBNYWNoaW5lIGxlYXJuaW5nIOKAkyBERUVQQ1JBRlQmdHJhZGU7IGRlcGxveSB2aXNpb24iLCJyaWQiOiJzYW5kZWVwLmFrQGluZmluZW9uLmNvbSIsIkRvYyB2ZXJzaW9uIjoiMi4xLjAiLCJEb2MgTGFuZ3VhZ2UiOiJFbmdsaXNoIiwiRG9jIERpdmlzaW9uIjoiTUNEIiwiRG9jIEJVIjoiSUNXIiwiRG9jIEZhbWlseSI6IlBTT0MifQ==)
+Additional models perform different ML model detections with various board sensors:
+- Radar Gestures Model - Recognizes hand gestures in front of the board.
+- Direction of Arrival (Audio) - Not supported at the moment.
+- Fall Detection - Uses accelerometer data from the BMI270 sensor to detect a person falling, while the board is attached to the person's wrist.
 
-See the [Design and implementation](docs/design_and_implementation.md) for the functional description of this code example.
+Pre-trained models that are ready for production, referred to as "Ready Models," can be found on the [Imagimob Ready Model Landing Page](https://www.imagimob.com/ready-models). These models, when deployed on a device, are intended specifically for testing purposes and come with a limited number of inferences.
 
+This project has a three project structure: CM33 secure, CM33 non-secure, and CM55 projects. All three projects are programmed to the external QSPI flash and executed in Execute in Place (XIP) mode. Extended boot launches the CM33 secure project from a fixed location in the external flash, which then configures the protection settings and launches the CM33 non-secure application. Additionally, CM33 non-secure application enables CM55 CPU and launches the CM55 application.
+
+The M55 processor performs the DEEPCRAFT™ model heavy lifting and reports the data via IPC to the M33 processor.
+The M33 Non-Secure application is a custom /IOTCONNECT application that is receiving the IPC messages, 
+processing the data and sending it to /IOTCONNECT. 
+This application can receive Cloud-To-Device commands as well and control one of the board LEDs or control the application flow.    
 
 ## Requirements
 
-- [ModusToolbox&trade;](https://www.infineon.com/modustoolbox) v3.7 or later (tested with v3.7)
+- [ModusToolbox&trade;](https://www.infineon.com/modustoolbox) with MTB Tools v3.6 or later (tested with v3.6)
 - Board support package (BSP) minimum required version: 1.0.0
 - Programming language: C
 - Associated parts: All [PSOC&trade; Edge MCU](https://www.infineon.com/products/microcontroller/32-bit-psoc-arm-cortex/32-bit-psoc-edge-arm) parts
 
-
 ## Supported toolchains (make variable 'TOOLCHAIN')
 
 - GNU Arm&reg; Embedded Compiler v14.2.1 (`GCC_ARM`) – Default value of `TOOLCHAIN`
-- LLVM Embedded Toolchain for Arm&reg; v19.1.5 (`LLVM_ARM`)
 
-> **Notes:**
-  - IAR is not supported by the TensorFlow Lite for Microcontrollers (TFLM) library
-  - This code example fails to build in RELEASE mode with the `GCC_ARM` toolchain v14.2.1 as it does not recognize some of the Helium instructions of the CMSIS-DSP library. This issue is not present in the Arm&reg; Compiler for Embedded (armclang)
-
+> **Note:**
+> This code example fails to build in RELEASE mode with the GCC_ARM toolchain v14.2.1 as it does not recognize some of the Helium instructions of the CMSIS-DSP library.
 
 ## Supported kits (make variable 'TARGET')
 
-- [PSOC&trade; Edge E84 Evaluation Kit](https://www.infineon.com/KIT_PSE84_EVAL) (`KIT_PSE84_EVAL_EPC2`) – Default value of `TARGET`
-- [PSOC&trade; Edge E84 AI Kit](https://www.infineon.com/KIT_PSE84_AI) (`KIT_PSE84_AI`)
+- [PSOC&trade; Edge E84 AI Kit](https://www.infineon.com/KIT_PSE84_AI) (`KIT_PSE84_AI`) -
+[Purchase Link](https://www.newark.com/infineon/kitpse84aitobo1/ai-eval-kit-32bit-arm-cortex-m55f/dp/49AM4459)
+- [PSOC&trade; Edge E84 Evaluation Kit](https://www.infineon.com/KIT_PSE84_EVAL) (`KIT_PSE84_EVAL_EPC2`) -
+[Purchase Link](https://www.newark.com/infineon/kitpse84evaltobo1/eval-kit-32bit-arm-cortex-m55f/dp/49AM4460)
 
 
-## Hardware setup
+## Set Up The Project
 
-This example uses the board's default configuration. See the kit user guide to ensure that the board is configured correctly.
+To set up the project, please refer to the 
+[/IOTCONNECT ModusToolbox&trade; PSOC Edge Developer Guide](DEVELOPER_GUIDE.md)
 
-Ensure the following jumper and pin configuration on board.
-- BOOT SW must be in the HIGH/ON position
-- J20 and J21 must be in the tristate/not connected (NC) position
+To quickly evaluate the project without development tools, you can download the pre-built Gestures binary package at
+[avnet-iotc-mtb-psoc-edge-rm-gestures-v2.0.0.hex.zip](https://downloads.iotconnect.io/partners/infineon/demos/avnet-iotc-mtb-psoc-edge-rm-gestures-v2.0.0.hex.zip).
+You can skip the VSCode and compiler setup in the Developer Guide and flash the extracted hex file with the MTB Programmer software.
+When flashing, ensure to select the "External Memory" option.
 
-> **Note:** This hardware setup is not required for the KIT_PSE84_AI kit.
+To trigger the certificate to be re-generated, click the Programmer's *Erase* button when connected to the board and program the firmware again.
 
-While using DVP Camera with PSOC&trade; Edge E84 AI Kit, refer to the [PSOC&trade; Edge E84 AI Kit guide](https://www.infineon.com/assets/row/public/documents/30/44/infineon-kit-pse84-ai-user-guide-usermanual-en.pdf) for instructions on connecting the camera module.
+- To select the model, update the `MODEL_SELECTION` variable in the [common.mk](common.mk):
 
-### Supported camera and display
+| Model name                  | Macro                       |
+|:----------------------------|:----------------------------|
+| Cough detection             | `COUGH_MODEL`               |
+| Alarm detection             | `ALARM_MODEL`               |
+| Baby cry detection          | `BABYCRY_MODEL`             |
+| Gesture detection           | `GESTURE_MODEL`             |
+| Directio of Arrival (Sound) | `DIRECTIONOFARRIVAL_MODEL`  |
+| Fall detection              | `FALLDETECTION_MODEL`       |
 
-- Connect any of the following cameras to the USB host port on the kit
-  - [HBVCAM OV7675 0.3MP MINI Camera](https://www.hbvcamera.com/0-3mp-pixel-usb-cameras/hbvcam-ov7675-0.3mp-mini-laptop-camera-module.html) <br>
-  - [Logitech C920 HD Pro Webcam](https://www.logitech.com/en-ch/shop/p/c920-pro-hd-webcam) <br>
-  - [Logitech C920e Business Webcam](https://www.logitech.com/en-ch/products/webcams/c920e-business-webcam) <br>
-  - [HBVCAM OS02F10 2MP Camera](https://www.hbvcamera.com/2-mega-pixel-usb-cameras/2mp-1080p-auto-focus-hd-usb-camera-module-for-atm-machine.html) <br>
+> **Note:** Currently, gesture detection model is supported only for the PSOC&trade; Edge AI kit.
 
-- The PSOC&trade; Edge AI Kit also supports -
-  - [OV7675 0.3MP DVP Camera module](https://blog.arducam.com/products/camera-breakout-board/0-3mp-ov7675) <br>
+## Running The Demo
 
-  > **Note:** To enable the DVP Camera, update the value of `CAMERA_TYPE` variable in the Makefile of CM55 project from `CAM_USB` to `CAM_DVP`.
-
-> **Note:** For any USB camera other than the ones listed above, ensure that the vendor ID  and product ID of the camera being used are correctly configured in the *usb_camera_task.c* and *usb_camera_task.h* file.
-
-- **Waveshare 4.3 inch Raspberry Pi DSI 800 x 480 display:** <br>
-  Connect the FPC 15-pin cable between the display connector and the PSOC&trade; Edge E84's RPI MIPI DSI connector as outlined in **Table 1** and **Figure 1**
-
-   **Table 1. Cable connection between display connect and kit**
-
-   Kit's name                                      | DSI connector
-   ----------------------------------------------- | --------------
-   PSOC&trade; Edge E84 Evaluation Kit             | J39
-   PSOC&trade; Edge E84 AI Kit                     | J10
-
-   <br>
-
-  **Figure 1. Display connection with PSOC&trade; Edge E84 Evaluation Kit**
-
-  ![](images/display-kit-connection.png)
+- For audio sound recognition models, once the board connects to /IOTCONNECT, 
+it will start processing microphone input and attempt to detect the corresponding sound. 
+This can be tested by placing the board in such way so that the microphone close to the PC speaker.
 
 
-## Software setup
-
-See the [ModusToolbox&trade; tools package installation guide](https://www.infineon.com/ModusToolboxInstallguide) for information about installing and configuring the tools package.
-
-Install a terminal emulator if you do not have one. Instructions in this document use [Tera Term](https://teratermproject.github.io/index-en.html).
-
-Install the [ModusToolbox&trade; Machine Learning Pack](https://softwaretools.infineon.com/tools/com.ifx.tb.tool.modustoolboxpackmachinelearning) or use the [Infineon Developer Center (IDC)](https://www.infineon.com/cms/en/design-support/tools/utilities/infineon-developer-center-idc-launcher/) launcher and search for "ModusToolbox Machine Learning Pack" and install it.
-
-This example requires no additional software or tools.
+- The following YouTube sound clips can be used for testing the audio models:
+  * [Baby Cry](https://www.youtube.com/watch?v=Rwj1_eWltJQ&t=265s)
+  * [Cough](https://www.youtube.com/watch?v=Qp09X74kjBc)
+  * [Alarm](https://www.youtube.com/watch?v=hFIJaB6kVzk)
 
 
-## Operation
+- For Gesture detection model, if having issues with detections, 
+place the kit at a distance of approximately 60 cms away from you,
+for the gestures to be detected correctly. 
+See the original Infineon project GitHub page for more details on how to perform gestures:
+    * Push
+    * Swipe Up
+    * Swipe Down
+    * Swipe Left
+    * Swipe Right
 
-See [Using the code example](docs/using_the_code_example.md) for instructions on creating a project, opening it in various supported IDEs, and performing tasks, such as building, programming, and debugging the application within the respective IDEs.
+- After a few seconds, the device will connect to /IOTCONNECT, and begin sending telemetry packets similar to the example below 
+depending on the application version and the model selected (first letter in the version prefix):
+```
+>: {"d":[{"d":{"version":"B-1.1.1","random":32,,"class_id":1,"class":"baby_cry","event_detected":true}}]}
+```
+- The following commands can be sent to the device using the /IOTCONNECT Web UI:
 
-1. Connect the board to your PC using the provided USB cable through the KitProg3 USB connector
-
-2. Open a terminal program and select the KitProg3 COM port. Set the serial port parameters to 8N1 and 115200 baud
-
-3. Connect the USB camera to the kit's USB host port and display as mentioned in the [Supported camera and display](#supported-camera-and-display) section
-
-4. After programming, the application starts automatically. Confirm that "PSOC Edge MCU: Machine learning DEEPCRAFT deploy vision" is displayed on the UART terminal and the kit will start capturing video from the USB camera
-
-   **Figure 2. Terminal output on program startup for deploy vision**
-
-   ![](images/terminal-deploy-vision.png)
-
-5. Perform hand gestures (rock, paper, or scissors) in front of the camera
-
-6. The display will show the live video feed with bounding boxes and labels for detected gestures
-
-   **Figure 3. Display output for recognized hand gestures**
-
-   **Rock gesture detection** | **Paper gesture detection** | **Scissors gesture detection**
-   ------------------------| ------------------------| ------------------------
-   ![](images/rock-detection.gif) | ![](images/paper-detection.gif) | ![](images/scissors-detection.gif)
-
-  <br>
-
-7. Labels for the detected hand gesture is displayed on the UART terminala
-
-   **Figure 4. Terminal output on gesture detection for deploy vision**
-
-   ![](images/terminal-gesture-detection.png)
-
-## Related resources
-
-Resources  | Links
------------|----------------------------------
-Application notes  | [AN235935](https://www.infineon.com/AN235935) – Getting started with PSOC&trade; Edge E8 MCU on ModusToolbox&trade; software
-Code examples  | [Using ModusToolbox&trade;](https://github.com/Infineon/Code-Examples-for-ModusToolbox-Software) on GitHub
-Device documentation | [PSOC&trade; Edge MCU datasheets](https://www.infineon.com/products/microcontroller/32-bit-psoc-arm-cortex/32-bit-psoc-edge-arm#documents) <br> [PSOC&trade; Edge MCU reference manuals](https://www.infineon.com/products/microcontroller/32-bit-psoc-arm-cortex/32-bit-psoc-edge-arm#documents)
-Development kits | Select your kits from the [Evaluation board finder](https://www.infineon.com/cms/en/design-support/finder-selection-tools/product-finder/evaluation-board)
-Libraries  | [mtb-dsl-pse8xxgp](https://github.com/Infineon/mtb-dsl-pse8xxgp) – Device support library for PSE8XXGP <br> [retarget-io](https://github.com/Infineon/retarget-io) – Utility library to retarget STDIO messages to a UART port
-Tools  | [ModusToolbox&trade;](https://www.infineon.com/modustoolbox) – ModusToolbox&trade; software is a collection of easy-to-use libraries and tools enabling rapid development with Infineon MCUs for applications ranging from wireless and cloud-connected systems, edge AI/ML, embedded sense and control, to wired USB connectivity using PSOC&trade; Industrial/IoT MCUs, AIROC&trade; Wi-Fi and Bluetooth&reg; connectivity devices, XMC&trade; Industrial MCUs, and EZ-USB&trade;/EZ-PD&trade; wired connectivity controllers. ModusToolbox&trade; incorporates a comprehensive set of BSPs, HAL, libraries, configuration tools, and provides support for industry-standard IDEs to fast-track your embedded application development
-
-<br>
-
-
-## Other resources
-
-Infineon provides a wealth of data at [www.infineon.com](https://www.infineon.com) to help you select the right device, and quickly and effectively integrate it into your design.
-
-
-## Document history
-
-Document title: *CE242145* – *PSOC&trade; Edge MCU: DEEPCRAFT&trade; deploy vision*
-
- Version | Description of change
- ------- | ---------------------
- 1.0.0   | New code example
- 2.0.0   | Updated to work with latest DEEPCRAFT&trade;
- 2.0.1   | README update to include instructions for enabling DVP Camera
- 2.1.0   | Updated design files to fix ModusToolbox&trade; v3.7 build warnings
-<br>
-
-
-All referenced product or service names and trademarks are the property of their respective owners.
-
-The Bluetooth&reg; word mark and logos are registered trademarks owned by Bluetooth SIG, Inc., and any use of such marks by Infineon is under license.
-
-PSOC&trade;, formerly known as PSoC&trade;, is a trademark of Infineon Technologies. Any references to PSoC&trade; in this document or others shall be deemed to refer to PSOC&trade;.
-
----------------------------------------------------------
-
-© Cypress Semiconductor Corporation, 2025. This document is the property of Cypress Semiconductor Corporation, an Infineon Technologies company, and its affiliates ("Cypress").  This document, including any software or firmware included or referenced in this document ("Software"), is owned by Cypress under the intellectual property laws and treaties of the United States and other countries worldwide.  Cypress reserves all rights under such laws and treaties and does not, except as specifically stated in this paragraph, grant any license under its patents, copyrights, trademarks, or other intellectual property rights.  If the Software is not accompanied by a license agreement and you do not otherwise have a written agreement with Cypress governing the use of the Software, then Cypress hereby grants you a personal, non-exclusive, nontransferable license (without the right to sublicense) (1) under its copyright rights in the Software (a) for Software provided in source code form, to modify and reproduce the Software solely for use with Cypress hardware products, only internally within your organization, and (b) to distribute the Software in binary code form externally to end users (either directly or indirectly through resellers and distributors), solely for use on Cypress hardware product units, and (2) under those claims of Cypress's patents that are infringed by the Software (as provided by Cypress, unmodified) to make, use, distribute, and import the Software solely for use with Cypress hardware products.  Any other use, reproduction, modification, translation, or compilation of the Software is prohibited.
-<br>
-TO THE EXTENT PERMITTED BY APPLICABLE LAW, CYPRESS MAKES NO WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, WITH REGARD TO THIS DOCUMENT OR ANY SOFTWARE OR ACCOMPANYING HARDWARE, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.  No computing device can be absolutely secure.  Therefore, despite security measures implemented in Cypress hardware or software products, Cypress shall have no liability arising out of any security breach, such as unauthorized access to or use of a Cypress product. CYPRESS DOES NOT REPRESENT, WARRANT, OR GUARANTEE THAT CYPRESS PRODUCTS, OR SYSTEMS CREATED USING CYPRESS PRODUCTS, WILL BE FREE FROM CORRUPTION, ATTACK, VIRUSES, INTERFERENCE, HACKING, DATA LOSS OR THEFT, OR OTHER SECURITY INTRUSION (collectively, "Security Breach").  Cypress disclaims any liability relating to any Security Breach, and you shall and hereby do release Cypress from any claim, damage, or other liability arising from any Security Breach.  In addition, the products described in these materials may contain design defects or errors known as errata which may cause the product to deviate from published specifications. To the extent permitted by applicable law, Cypress reserves the right to make changes to this document without further notice. Cypress does not assume any liability arising out of the application or use of any product or circuit described in this document. Any information provided in this document, including any sample design information or programming code, is provided only for reference purposes.  It is the responsibility of the user of this document to properly design, program, and test the functionality and safety of any application made of this information and any resulting product.  "High-Risk Device" means any device or system whose failure could cause personal injury, death, or property damage.  Examples of High-Risk Devices are weapons, nuclear installations, surgical implants, and other medical devices.  "Critical Component" means any component of a High-Risk Device whose failure to perform can be reasonably expected to cause, directly or indirectly, the failure of the High-Risk Device, or to affect its safety or effectiveness.  Cypress is not liable, in whole or in part, and you shall and hereby do release Cypress from any claim, damage, or other liability arising from any use of a Cypress product as a Critical Component in a High-Risk Device. You shall indemnify and hold Cypress, including its affiliates, and its directors, officers, employees, agents, distributors, and assigns harmless from and against all claims, costs, damages, and expenses, arising out of any claim, including claims for product liability, personal injury or death, or property damage arising from any use of a Cypress product as a Critical Component in a High-Risk Device. Cypress products are not intended or authorized for use as a Critical Component in any High-Risk Device except to the limited extent that (i) Cypress's published data sheet for the product explicitly states Cypress has qualified the product for use in a specific High-Risk Device, or (ii) Cypress has given you advance written authorization to use the product as a Critical Component in the specific High-Risk Device and you have signed a separate indemnification agreement.
-<br>
-Cypress, the Cypress logo, and combinations thereof, ModusToolbox, PSoC, CAPSENSE, EZ-USB, F-RAM, and TRAVEO are trademarks or registered trademarks of Cypress or a subsidiary of Cypress in the United States or in other countries. For a more complete list of Cypress trademarks, visit www.infineon.com. Other names and brands may be claimed as property of their respective owners.
+    | Command                  | Argument Type     | Description                                                                                             |
+    |:-------------------------|-------------------|:--------------------------------------------------------------------------------------------------------|
+    | `board-user-led`         | String (on/off)   | Turn the board LED on or off (Red LED on the EVK, Green on the AI)                                      |
+    | `set-reporting-interval` | Number (eg. 2000) | Set telemetry reporting interval in milliseconds.  By default, the application will report every 2000ms |
