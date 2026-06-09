@@ -132,11 +132,13 @@ An /IOTCONNECT *Device Template* will need to be created or imported.
 * Enter the *DUID* displayed on the device terminal into the *Unique ID* field (also called Device Unique ID - DUID in this guide).
 * Enter the same DUID or descriptive name of your choosing as *Display Name* to help identify your device.
 * Select the template from the dropdown box that was just imported.
+* Ensure that *Stream Type* is USB Based and WebRTC is selected in the *Steam Resource*.
 * Ensure "Use my certificate" is selected under *Device certificate*.
 
 Return to the device terminal and enter your account and Wi-Fi credentials, similar to this:
 ```
 Please enter your device configuration
+--- NOTE: You may LCD corruption during this setup process ---
 Platform (aws/az): 
 >Platform: aws
 CPID: 
@@ -182,4 +184,6 @@ at the *Do you wish to configure the device?* prompt to re-configure the values.
 * Return to the /IOTCCONNECT browser window and copy the device certificate including the BEGIN and END lines.
 * Click **Save & View**.
 
-* At this point, the application is set up with /IOTCONNECT credentials and reseting the board should connect it to /IOTCONNECT.
+* At this point, the application is set up with /IOTCONNECT credentials and resetting the board should connect it to /IOTCONNECT.
+* Once the board is connected, you should be able to start the WebRTC stream from IoTConnect. 
+See the main [README.md](README.md) for more details.
