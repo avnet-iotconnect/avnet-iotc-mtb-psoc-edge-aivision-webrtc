@@ -5,8 +5,6 @@ This demo project is the integration of Infineon's
 and [Avnet /IOTCONNECT ModusToolbox&trade; SDK](https://github.com/avnet-iotconnect/avnet-iotc-mtb-sdk)
 with /IOTCONNECT Amazon Kinesis WebRTC support.
 
-Pre-trained models that are ready for production, referred to as "Ready Models," can be found on the [Imagimob Ready Model Landing Page](https://www.imagimob.com/ready-models). These models, when deployed on a device, are intended specifically for testing purposes and come with a limited number of inferences.
-
 This project has a three project structure: CM33 secure, CM33 non-secure, and CM55 projects.
 All three projects are programmed to the external QSPI flash and executed in Execute in Place (XIP) mode. 
 Extended boot launches the CM33 secure project from a fixed location in the external flash, which then configures the protection settings and launches the CM33 non-secure application. Additionally, CM33 non-secure application enables CM55 CPU and launches the CM55 application.
@@ -84,3 +82,4 @@ We suspect that this issue has to do with UART and GPU contention while CM33 is 
   - Severe LCD corruption during the Device Configuration setup or while the *Do you wish to configure the board* prompt is displayed on the screen. 
   - Occasional horizontal colored lines appearing on LCD and WebRTC stream.
   - Due to this, the H.264 encoding has been artificially capped at around 3FPS, while the encoding + LCD + inference performance is 5+ FPFS and close to the 6.25 FPS rate of the DVP camera stream.
+- The project does not yet implement the ability to refresh AWS credentials. WebRTC will work for about an hour before the board will need to be reset to start with new AWS credentials. 
