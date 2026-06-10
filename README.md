@@ -21,6 +21,7 @@ This application can receive Cloud-To-Device commands as well and control one of
 - Board support package (BSP) minimum required version: 1.0.0
 - Programming language: C
 - Associated parts: All [PSOC&trade; Edge MCU](https://www.infineon.com/products/microcontroller/32-bit-psoc-arm-cortex/32-bit-psoc-edge-arm) parts
+- Recommended: [Waveshare 4.3 inch Raspberry Pi DSI 800*480 display](https://www.waveshare.com/4.3inch-dsi-lcd.htm)
 
 ## Supported toolchains (make variable 'TOOLCHAIN')
 
@@ -42,7 +43,7 @@ To set up the project, please refer to the
 [/IOTCONNECT ModusToolbox&trade; PSOC Edge Developer Guide](DEVELOPER_GUIDE.md)
 
 To quickly evaluate the project without development tools, you can download the pre-built Gestures binary package at
-[TBD.zip](https://downloads.iotconnect.io/partners/infineon/demos/TBD-v1.0.0.hex.zip).
+[avnet-iotc-mtb-psoc-edge-aivision-webrtc-v1.0.0.hex.zip](https://downloads.iotconnect.io/partners/infineon/demos/avnet-iotc-mtb-psoc-edge-aivision-webrtc-v1.0.0.hex.zip).
 You can skip the VSCode and compiler setup in the Developer Guide and flash the extracted hex file with the MTB Programmer software.
 When flashing, ensure to select the "External Memory" option.
 
