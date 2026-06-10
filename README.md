@@ -21,7 +21,6 @@ This application can receive Cloud-To-Device commands as well and control one of
 - Board support package (BSP) minimum required version: 1.0.0
 - Programming language: C
 - Associated parts: All [PSOC&trade; Edge MCU](https://www.infineon.com/products/microcontroller/32-bit-psoc-arm-cortex/32-bit-psoc-edge-arm) parts
-- Recommended: [Waveshare 4.3 inch Raspberry Pi DSI 800*480 display](https://www.waveshare.com/4.3inch-dsi-lcd.htm)
 
 ## Supported toolchains (make variable 'TOOLCHAIN')
 
@@ -36,6 +35,12 @@ This application can receive Cloud-To-Device commands as well and control one of
 
 - [PSOC&trade; Edge E84 AI Kit](https://www.infineon.com/KIT_PSE84_AI) (`KIT_PSE84_AI`) -
 [Purchase Link](https://www.newark.com/infineon/kitpse84aitobo1/ai-eval-kit-32bit-arm-cortex-m55f/dp/49AM4459)
+
+## Additional Hardware
+
+- Recommended: [Waveshare 4.3 inch Raspberry Pi DSI 800*480 display](https://www.waveshare.com/4.3inch-dsi-lcd.htm)
+- Included with the E84 AI Kit: [OV7675 0.3MP DVP Camera](https://blog.arducam.com/products/camera-breakout-board/0-3mp-ov7675)
+
 
 ## Set Up The Project
 
