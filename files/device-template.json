@@ -1,0 +1,84 @@
+{
+    "code": "psewebrtc",
+    "name": "psewebrtc",
+    "authType": 2,
+    "attributes": [
+        {
+            "name": "version",
+            "displayName": "",
+            "type": "STRING",
+            "description": "Version reported by the software",
+            "unit": "",
+            "attributeColor": "",
+            "aggregateTypes": []
+        },
+        {
+            "name": "class_id",
+            "displayName": "Detected class numeric index",
+            "type": "INTEGER",
+            "description": "Detected class name",
+            "unit": "",
+            "attributeColor": "",
+            "aggregateTypes": []
+        },
+        {
+            "name": "class",
+            "displayName": "",
+            "type": "STRING",
+            "description": "",
+            "unit": "",
+            "attributeColor": "",
+            "aggregateTypes": []
+        },
+		{
+            "name": "event_detected",
+            "type": "BOOLEAN",
+            "description": "Detected true when an actual event has been detected",
+            "unit": "",
+            "attributeColor": "",
+            "aggregateTypes": []
+        },
+        {
+            "name": "random",
+            "type": "INTEGER",
+            "description": "A randomly generated integer",
+            "unit": "",
+            "attributeColor": "",
+            "aggregateTypes": []
+        }
+    ],
+    "commands": [
+        {
+            "name": "board-user-led",
+            "command": "board-user-led",
+            "requiredParam": true,
+            "requiredAck": true,
+            "isOTACommand": false
+        },
+		{
+            "name": "set-reporting-interval",
+            "command": "set-reporting-interval",
+            "requiredParam": true,
+            "requiredAck": true,
+            "isOTACommand": false
+        }
+    ],
+    "messageVersion": "2.1",
+    "msgCode": "XG4EXAJ",
+    "capability": "0",
+    "enableCSR": "false",
+    "c2dOnDemand": 0,
+    "properties": {
+        "description": null,
+        "dataFrequency": "5",
+        "fileSupport": true,
+        "videoStreamResource": "2",
+        "videoStreamType": "2",
+        "autoStartVideoStream": false,
+        "certRenewalDay": 0,
+        "enableCSR": false
+    },
+    "_meta": {
+        "version": "2.0"
+    }
+}
