@@ -116,6 +116,14 @@
 // in quick succession) without ever forcing a producer to wait.
 #define SIG_OUTBOX_DEPTH 16U
 
+// Early ICE candidate buffer depth. KVS delivers the SDP offer and the viewer's
+// already-gathered trickle candidates in a single burst, all consumed inside
+// signaling_wait_for_offer — before the peer session is attached. We stash those
+// candidates here and replay them via signaling_flush_early_candidates() once the
+// orchestrator has attached the session and run SetRemoteDescription. Chrome
+// typically emits well under a dozen host/srflx candidates up front; 32 is ample.
+#define SIG_EARLY_ICE_MAX 32U
+
 // WSS upgrade transport constants.
 #define WSS_PORT 443
 #define WSS_RFC6455_GUID "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -193,12 +201,23 @@ struct SignalingCtx {
     PeerConnectionSession_t *peer_connection_session;
     // Last time we queued a WSS PING. See SIG_KEEPALIVE_PING_INTERVAL_MS.
     TickType_t last_ping_tick;
+    // Remote ICE candidates that arrived (in the offer burst) before the peer
+    // session was attached. Each is a malloc'd copy of the decoded candidate
+    // payload; drained + freed by signaling_flush_early_candidates(), and freed
+    // on detach/disconnect if never flushed. See SIG_EARLY_ICE_MAX.
+    uint8_t *early_ice[SIG_EARLY_ICE_MAX];
+    size_t   early_ice_len[SIG_EARLY_ICE_MAX];
+    int      early_ice_count;
 };
 
 // File-scope statics for predictable-size scratch used inside
 // signaling_resolve_endpoint. One call at a time (single WebRTC task).
 static char s_url_buf[SIG_URL_BUF];
 static char s_body_buf[SIG_BODY_BUF];
+// HTTPS (REST) endpoint from GetSignalingChannelEndpoint. Captured in
+// signaling_resolve_endpoint alongside the WSS endpoint; consumed by
+// signaling_get_ice_servers (GetIceServerConfig POSTs to this host).
+static char s_https_endpoint[SIG_URL_BUF];
 // SigV4_GenerateHTTPAuthorization treats authBufLen as in/out: input is capacity,
 // output is bytes actually written (always <= capacity). We pass SIG_AUTH_BUF in,
 // then null-terminate at the returned length — the +1 byte covers the case where
@@ -254,7 +273,11 @@ int signaling_resolve_endpoint(const AwsCreds *creds, char *out_endpoint, size_t
             .pChannelArn      = creds->channel_arn,
             .channelArnLength = strlen(creds->channel_arn),
         },
-        .protocols = SIGNALING_PROTOCOL_WEBSOCKET_SECURE,
+        /* Ask for HTTPS too, not just WSS: GetIceServerConfig (TURN relay
+         * discovery) POSTs to the HTTPS endpoint, and KVS only returns the
+         * endpoints for the protocols requested here. Without HTTPS the ICE
+         * config fetch is skipped and we fall back to STUN-only. */
+        .protocols = SIGNALING_PROTOCOL_WEBSOCKET_SECURE | SIGNALING_PROTOCOL_HTTPS,
         // We're the on-channel endpoint, sitting and waiting for browsers
         // (KVS "viewers") to publish offers. The role names describe the
         // signaling-channel topology, not the media direction — a camera
@@ -431,11 +454,333 @@ int signaling_resolve_endpoint(const AwsCreds *creds, char *out_endpoint, size_t
     out_endpoint[endpoints.wssEndpoint.endpointLength] = '\0';
     printf("[signaling] WSS endpoint: %s\n", out_endpoint);
 
+    /* Stash the HTTPS (REST) endpoint too — GetIceServerConfig POSTs to it.
+     * Non-fatal if absent: we fall back to STUN-only (still gives srflx). */
+    s_https_endpoint[0] = '\0';
+    if (NULL != endpoints.httpsEndpoint.pEndpoint &&
+        endpoints.httpsEndpoint.endpointLength > 0U &&
+        endpoints.httpsEndpoint.endpointLength < sizeof(s_https_endpoint)) {
+        memcpy(s_https_endpoint, endpoints.httpsEndpoint.pEndpoint, endpoints.httpsEndpoint.endpointLength);
+        s_https_endpoint[endpoints.httpsEndpoint.endpointLength] = '\0';
+        printf("[signaling] HTTPS endpoint: %s\n", s_https_endpoint);
+    } else {
+        printf("[signaling] no HTTPS endpoint in response; TURN/ICE-config will be unavailable\n");
+    }
+
 cleanup:
     iotcl_dra_url_deinit(&url_ctx);
     free(canon_hdr_buf);
     iotconnect_free_https_response(&response);
     return rc;
+}
+
+// -------------------------------------------------------------------------
+// GetIceServerConfig — fetch STUN/TURN servers for NAT traversal
+// -------------------------------------------------------------------------
+//
+// Without ICE servers the peer connection only gathers a host candidate (the
+// board's private LAN IP), which a remote browser can't reach — connectivity
+// checks never succeed and the viewer sees black video. We always provide the
+// regional KVS STUN server (for a server-reflexive/srflx candidate) and, when
+// the HTTPS endpoint is known, fetch short-lived TURN relays from KVS
+// GetIceServerConfig (SigV4-signed REST, same shape as resolve_endpoint).
+
+#define SIG_ICE_URI_STUN  "stun:"
+#define SIG_ICE_URI_TURNS "turns:"
+#define SIG_ICE_URI_TURN  "turn:"
+// KVS returns a small list of ICE server configs (typically 1-2), each with up
+// to SIGNALING_ICE_SERVER_MAX_URIS URIs sharing one ephemeral user/password.
+#define SIG_ICE_CFG_MAX 5U
+
+// Parse "stun:<host>:<port>" / "turn[s]:<host>:<port>[?transport=udp|tcp]" into
+// an IceControllerIceServer_t (host + port + type + protocol). The host is left
+// unresolved (NUL-terminated) — the ICE controller does the DNS lookup. Returns
+// 0 on success, -1 if the URI can't be parsed.
+static int parse_ice_server_uri(IceControllerIceServer_t *srv, const char *uri, size_t uri_len) {
+    const char *curr;
+    const char *tail;
+    const char *colon;
+
+    if (uri_len > 5U && 0 == strncmp(uri, SIG_ICE_URI_STUN, 5U)) {
+        srv->serverType = ICE_CONTROLLER_ICE_SERVER_TYPE_STUN;
+        curr = uri + 5;
+    } else if (uri_len > 6U && 0 == strncmp(uri, SIG_ICE_URI_TURNS, 6U)) {
+        srv->serverType = ICE_CONTROLLER_ICE_SERVER_TYPE_TURNS;
+        curr = uri + 6;
+    } else if (uri_len > 5U && 0 == strncmp(uri, SIG_ICE_URI_TURN, 5U)) {
+        srv->serverType = ICE_CONTROLLER_ICE_SERVER_TYPE_TURN;
+        curr = uri + 5;
+    } else {
+        printf("[signaling] cannot parse ICE URI: %.*s\n", (int) uri_len, uri);
+        return -1;
+    }
+    tail = uri + uri_len;
+
+    colon = memchr(curr, ':', (size_t) (tail - curr));
+    if (NULL == colon) {
+        printf("[signaling] ICE URI missing ':port': %.*s\n", (int) uri_len, uri);
+        return -1;
+    }
+    size_t host_len = (size_t) (colon - curr);
+    if (0U == host_len || host_len >= ICE_CONTROLLER_ICE_SERVER_URL_MAX_LENGTH) {
+        printf("[signaling] ICE URI host empty/too long\n");
+        return -1;
+    }
+    memcpy(srv->url, curr, host_len);
+    srv->url[host_len] = '\0';   // must be NUL-terminated for DNS lookup
+    srv->urlLength = host_len;
+    curr = colon + 1;
+
+    const char *q = memchr(curr, '?', (size_t) (tail - curr));
+    size_t port_len = (NULL == q) ? (size_t) (tail - curr) : (size_t) (q - curr);
+    if (0U == port_len || port_len > 5U) {
+        printf("[signaling] ICE URI bad port length\n");
+        return -1;
+    }
+    uint32_t port = 0U;
+    for (size_t i = 0; i < port_len; i++) {
+        if (curr[i] < '0' || curr[i] > '9') {
+            printf("[signaling] ICE URI non-numeric port\n");
+            return -1;
+        }
+        port = (port * 10U) + (uint32_t) (curr[i] - '0');
+    }
+    if (0U == port || port > 65535U) {
+        printf("[signaling] ICE URI port out of range: %u\n", (unsigned) port);
+        return -1;
+    }
+    srv->iceEndpoint.transportAddress.port = (uint16_t) port;
+    srv->iceEndpoint.isPointToPoint = 0U;
+    curr += port_len;
+
+    // Transport: TURN/TURNS carry ?transport=udp|tcp; STUN is always UDP.
+    if (ICE_CONTROLLER_ICE_SERVER_TYPE_TURN == srv->serverType ||
+        ICE_CONTROLLER_ICE_SERVER_TYPE_TURNS == srv->serverType) {
+        if (curr < tail && 0 == strncmp(curr, "?transport=tcp", (size_t) (tail - curr))) {
+            srv->protocol = ICE_SOCKET_PROTOCOL_TCP;
+        } else {
+            srv->protocol = ICE_SOCKET_PROTOCOL_UDP;   // default/explicit udp
+        }
+    } else {
+        srv->protocol = ICE_SOCKET_PROTOCOL_UDP;
+    }
+    return 0;
+}
+
+int signaling_get_ice_servers(const AwsCreds *creds, IceControllerIceServer_t *out_servers, size_t *inout_count) {
+    if (NULL == creds || NULL == out_servers || NULL == inout_count || *inout_count < 1U) {
+        return -1;
+    }
+
+    const size_t cap = *inout_count;
+    size_t out_idx = 0;
+
+    // 1. Default regional STUN server at index 0 (no credentials, never
+    //    expires). This alone yields a server-reflexive candidate.
+    {
+        IceControllerIceServer_t *stun = &out_servers[0];
+        memset(stun, 0, sizeof(*stun));
+        int n = snprintf(stun->url, sizeof(stun->url), "stun.kinesisvideo.%s.amazonaws.com", creds->region);
+        if (n > 0 && (size_t) n < sizeof(stun->url)) {
+            stun->urlLength = (size_t) n;
+            stun->serverType = ICE_CONTROLLER_ICE_SERVER_TYPE_STUN;
+            stun->protocol = ICE_SOCKET_PROTOCOL_UDP;
+            stun->iceEndpoint.isPointToPoint = 0U;
+            stun->iceEndpoint.transportAddress.port = 443U;
+            out_idx = 1;
+            printf("[signaling] ICE[0] STUN %s:443\n", stun->url);
+        } else {
+            printf("[signaling] failed to format default STUN URL\n");
+        }
+    }
+
+    // 2. TURN relays via GetIceServerConfig. Needs the HTTPS endpoint + a
+    //    client id. Any failure here is non-fatal: STUN-only still works for
+    //    many topologies.
+    if ('\0' == s_https_endpoint[0] || NULL == creds->client_id) {
+        printf("[signaling] skipping TURN fetch (https_endpoint=%s client_id=%s)\n",
+               ('\0' == s_https_endpoint[0]) ? "none" : "ok",
+               (NULL == creds->client_id) ? "none" : "ok");
+        *inout_count = out_idx;
+        return (out_idx > 0) ? 0 : -1;
+    }
+
+    SignalingChannelEndpoint_t https_ep = {
+        .pEndpoint = s_https_endpoint,
+        .endpointLength = strlen(s_https_endpoint),
+    };
+    GetIceServerConfigRequestInfo_t req_info = {
+        .channelArn = {
+            .pChannelArn = creds->channel_arn,
+            .channelArnLength = strlen(creds->channel_arn),
+        },
+        .pClientId = creds->client_id,
+        .clientIdLength = strlen(creds->client_id),
+    };
+    SignalingRequest_t sig_req = {
+        .pUrl = s_url_buf,
+        .urlLength = sizeof(s_url_buf),
+        .pBody = s_body_buf,
+        .bodyLength = sizeof(s_body_buf),
+    };
+    SignalingResult_t sig_rc = Signaling_ConstructGetIceServerConfigRequest(&https_ep, &req_info, &sig_req);
+    if (SIGNALING_RESULT_OK != sig_rc) {
+        printf("[signaling] ConstructGetIceServerConfigRequest failed: %d (STUN-only)\n", (int) sig_rc);
+        *inout_count = out_idx;
+        return (out_idx > 0) ? 0 : -1;
+    }
+
+    IotclDraUrlContext url_ctx = {0};
+    if (0 != iotcl_dra_url_init(&url_ctx, s_url_buf)) {
+        printf("[signaling] ice: failed to parse URL: %s (STUN-only)\n", s_url_buf);
+        *inout_count = out_idx;
+        return (out_idx > 0) ? 0 : -1;
+    }
+    const char *host = iotcl_dra_url_get_hostname(&url_ctx);
+    const char *path = iotcl_dra_url_get_resource(&url_ctx);
+    if (NULL == host || NULL == path) {
+        printf("[signaling] ice: URL missing host/path (STUN-only)\n");
+        iotcl_dra_url_deinit(&url_ctx);
+        *inout_count = out_idx;
+        return (out_idx > 0) ? 0 : -1;
+    }
+
+    int rc_ret = (out_idx > 0) ? 0 : -1;
+    char *canon_hdr_buf = NULL;
+    IotConnectHttpResponse response = { 0 };
+
+    char date_iso[SIG_DATE_ISO_LEN];
+    format_iso8601_now(date_iso);
+
+    size_t canon_hdr_size = strlen(host) + sizeof(date_iso) + strlen(creds->session_token) + SIG_CANON_HDR_OVERHEAD;
+    canon_hdr_buf = malloc(canon_hdr_size);
+    if (NULL == canon_hdr_buf) {
+        printf("[signaling] ice: OOM canon_hdr_buf (STUN-only)\n");
+        goto ice_cleanup;
+    }
+    int hdr_len = snprintf(
+        canon_hdr_buf, canon_hdr_size,
+        "host:%s\n"
+        "x-amz-date:%s\n"
+        "x-amz-security-token:%s\n",
+        host, date_iso, creds->session_token
+    );
+    if (hdr_len <= 0 || (size_t) hdr_len >= canon_hdr_size) {
+        printf("[signaling] ice: canon_hdr overflow (STUN-only)\n");
+        goto ice_cleanup;
+    }
+
+    SigV4CryptoInterface_t crypto = {
+        .hashInit = sha256_init_cb,
+        .hashUpdate = sha256_update_cb,
+        .hashFinal = sha256_final_cb,
+        .pHashContext = &s_sha_ctx,
+        .hashBlockLen = 64,
+        .hashDigestLen = 32,
+    };
+    SigV4Credentials_t sigv4_creds = {
+        .pAccessKeyId = creds->access_key_id,
+        .accessKeyIdLen = strlen(creds->access_key_id),
+        .pSecretAccessKey = creds->secret_access_key,
+        .secretAccessKeyLen = strlen(creds->secret_access_key),
+    };
+    SigV4HttpParameters_t http_params = {
+        .pHttpMethod = "POST",
+        .httpMethodLen = 4,
+        .flags = SIGV4_HTTP_PATH_IS_CANONICAL_FLAG | SIGV4_HTTP_HEADERS_ARE_CANONICAL_FLAG,
+        .pPath = path,
+        .pathLen = strlen(path),
+        .pQuery = NULL,
+        .queryLen = 0,
+        .pHeaders = canon_hdr_buf,
+        .headersLen = (size_t) hdr_len,
+        .pPayload = s_body_buf,
+        .payloadLen = sig_req.bodyLength,
+    };
+    SigV4Parameters_t sigv4_params = {
+        .pCredentials = &sigv4_creds,
+        .pDateIso8601 = date_iso,
+        .pAlgorithm = NULL,
+        .algorithmLen = 0,
+        .pRegion = creds->region,
+        .regionLen = strlen(creds->region),
+        .pService = KVS_SERVICE,
+        .serviceLen = KVS_SERVICE_LEN,
+        .pCryptoInterface = &crypto,
+        .pHttpParameters = &http_params,
+    };
+    size_t auth_buf_len = SIG_AUTH_BUF;
+    char *sig_ptr = NULL;
+    size_t sig_len = 0;
+    SigV4Status_t sv4_rc = SigV4_GenerateHTTPAuthorization(&sigv4_params, s_auth_buf, &auth_buf_len, &sig_ptr, &sig_len);
+    if (SigV4Success != sv4_rc) {
+        printf("[signaling] ice: SigV4 failed: %d (STUN-only)\n", (int) sv4_rc);
+        goto ice_cleanup;
+    }
+    s_auth_buf[auth_buf_len] = '\0';
+
+    IotConnectHttpHeader extra_headers[3] = {
+        { .name = "Authorization",        .value = s_auth_buf },
+        { .name = "x-amz-date",           .value = date_iso   },
+        { .name = "x-amz-security-token", .value = (char *) creds->session_token },
+    };
+    IotConnectHttpOpts opts = {
+        .ca_cert = (char *) IOTCL_AMAZON_ROOT_CA1,
+        .cert = NULL,
+        .key = NULL,
+        .headers = extra_headers,
+        .headers_len = 3,
+    };
+    unsigned int http_rc = iotconnect_https_request_with_opts(&response, host, path, s_body_buf, &opts);
+    if (0 != http_rc || NULL == response.data) {
+        printf("[signaling] ice: GetIceServerConfig HTTP failed: 0x%08x (STUN-only)\n", http_rc);
+        goto ice_cleanup;
+    }
+
+    SignalingIceServer_t ice_cfgs[SIG_ICE_CFG_MAX];
+    memset(ice_cfgs, 0, sizeof(ice_cfgs));
+    size_t num_cfgs = SIG_ICE_CFG_MAX;
+    sig_rc = Signaling_ParseGetIceServerConfigResponse(response.data, strlen(response.data), ice_cfgs, &num_cfgs);
+    if (SIGNALING_RESULT_OK != sig_rc) {
+        printf("[signaling] ice: ParseGetIceServerConfigResponse failed: %d (STUN-only)\n", (int) sig_rc);
+        goto ice_cleanup;
+    }
+
+    // Copy each TURN URI + its ephemeral creds into caller storage (the parsed
+    // pointers alias response.data, which we free below).
+    for (size_t i = 0; i < num_cfgs && out_idx < cap; i++) {
+        for (size_t j = 0; j < ice_cfgs[i].urisNum && out_idx < cap; j++) {
+            IceControllerIceServer_t *dst = &out_servers[out_idx];
+            memset(dst, 0, sizeof(*dst));
+            if (0 != parse_ice_server_uri(dst, ice_cfgs[i].pUris[j], ice_cfgs[i].urisLength[j])) {
+                continue;
+            }
+            if (NULL != ice_cfgs[i].pUserName && ice_cfgs[i].userNameLength > 0U &&
+                ice_cfgs[i].userNameLength < sizeof(dst->userName)) {
+                memcpy(dst->userName, ice_cfgs[i].pUserName, ice_cfgs[i].userNameLength);
+                dst->userName[ice_cfgs[i].userNameLength] = '\0';
+                dst->userNameLength = ice_cfgs[i].userNameLength;
+            }
+            if (NULL != ice_cfgs[i].pPassword && ice_cfgs[i].passwordLength > 0U &&
+                ice_cfgs[i].passwordLength < sizeof(dst->password)) {
+                memcpy(dst->password, ice_cfgs[i].pPassword, ice_cfgs[i].passwordLength);
+                dst->password[ice_cfgs[i].passwordLength] = '\0';
+                dst->passwordLength = ice_cfgs[i].passwordLength;
+            }
+            printf("[signaling] ICE[%u] type=%d %s:%u proto=%d\n",
+                   (unsigned) out_idx, (int) dst->serverType, dst->url,
+                   (unsigned) dst->iceEndpoint.transportAddress.port, (int) dst->protocol);
+            out_idx++;
+        }
+    }
+    rc_ret = (out_idx > 0) ? 0 : -1;
+
+ice_cleanup:
+    iotcl_dra_url_deinit(&url_ctx);
+    free(canon_hdr_buf);
+    iotconnect_free_https_response(&response);
+    *inout_count = out_idx;
+    return rc_ret;
 }
 
 // -------------------------------------------------------------------------
@@ -789,6 +1134,16 @@ static void signaling_unlock(SignalingHandle sig) {
 }
 
 
+// Free any buffered early ICE candidates. Caller holds ws_mutex (or is the sole
+// webrtc-task owner during teardown). Safe to call when the buffer is empty.
+static void free_early_ice(SignalingHandle sig) {
+    for (int i = 0; i < sig->early_ice_count; i++) {
+        free(sig->early_ice[i]);
+        sig->early_ice[i] = NULL;
+    }
+    sig->early_ice_count = 0;
+}
+
 void signaling_set_peer_connection(SignalingHandle sig, PeerConnectionSession_t *session) {
     if (NULL == sig) {
         return;
@@ -801,10 +1156,53 @@ void signaling_set_peer_connection(SignalingHandle sig, PeerConnectionSession_t 
     }
 
     sig->peer_connection_session = session;
+    // Detaching at viewer-session end: drop any early candidates that were
+    // buffered but never flushed (e.g., the session failed before
+    // SetRemoteDescription). They belong to the session that's going away.
+    if (NULL == session) {
+        free_early_ice(sig);
+    }
 
     if (NULL != sig->ws_mutex) {
         signaling_unlock(sig);
     }
+}
+
+// Replay ICE candidates that arrived in the offer burst before the peer session
+// was attached. Call once, right after PeerConnection_SetRemoteDescription (the
+// remote ufrag/pwd from the offer must be known before candidates can pair).
+// Runs on the webrtc task, sequentially with dispatch_text_frame, so it takes
+// the ws_mutex to serialize against a candidate landing during the media pump.
+void signaling_flush_early_candidates(SignalingHandle sig) {
+    if (NULL == sig) {
+        return;
+    }
+    if (0 != signaling_lock(sig, portMAX_DELAY)) {
+        return;
+    }
+    if (NULL == sig->peer_connection_session || 0 == sig->early_ice_count) {
+        signaling_unlock(sig);
+        return;
+    }
+    int flushed = 0;
+    for (int i = 0; i < sig->early_ice_count; i++) {
+        PeerConnectionResult_t pc_rc = PeerConnection_AddRemoteCandidate(
+            sig->peer_connection_session,
+            (const char *) sig->early_ice[i],
+            sig->early_ice_len[i]
+        );
+        if (PEER_CONNECTION_RESULT_OK != pc_rc &&
+            PEER_CONNECTION_RESULT_FAIL_ICE_CONTROLLER_DESERIALIZE_CANDIDATE != pc_rc) {
+            printf("[signaling] flush AddRemoteCandidate failed: %d\n", (int) pc_rc);
+        } else {
+            flushed++;
+        }
+        free(sig->early_ice[i]);
+        sig->early_ice[i] = NULL;
+    }
+    printf("[signaling] flushed %d/%d buffered ICE candidate(s)\n", flushed, sig->early_ice_count);
+    sig->early_ice_count = 0;
+    signaling_unlock(sig);
 }
 
 // Split a "wss://<host>/<path-and-query>" URL into a malloc'd host and a
@@ -1032,7 +1430,26 @@ static void dispatch_text_frame(SignalingHandle sig, const uint8_t *msg, size_t 
             return;
         }
         if (NULL == sig->peer_connection_session) {
-            printf("[signaling] ICE_CANDIDATE arrived before peer session attach, dropping\n");
+            // Offer + trickle candidates arrive together before the orchestrator
+            // attaches the session. Buffer (don't drop) so we can replay them
+            // after SetRemoteDescription; otherwise ICE has no remote candidates
+            // to pair with and the connection never completes (black video).
+            if (sig->early_ice_count < (int) SIG_EARLY_ICE_MAX) {
+                uint8_t *copy = malloc(decoded_len);
+                if (NULL != copy) {
+                    memcpy(copy, payload, decoded_len);
+                    sig->early_ice[sig->early_ice_count] = copy;
+                    sig->early_ice_len[sig->early_ice_count] = decoded_len;
+                    sig->early_ice_count++;
+                    printf("[signaling] buffered early ICE candidate #%d (%u bytes)\n",
+                           sig->early_ice_count, (unsigned) decoded_len);
+                } else {
+                    printf("[signaling] OOM buffering early ICE candidate\n");
+                }
+            } else {
+                printf("[signaling] early ICE buffer full (%u), dropping candidate\n",
+                       (unsigned) SIG_EARLY_ICE_MAX);
+            }
             return;
         }
 
@@ -1423,6 +1840,7 @@ void signaling_disconnect(SignalingHandle sig) {
     }
     sig->pending_offer_len = 0;
     sig->peer_connection_session = NULL;
+    free_early_ice(sig);
     cy_awsport_network_disconnect(&sig->net_ctx);
     cy_awsport_network_delete(&sig->net_ctx);
     sig->connected = false;

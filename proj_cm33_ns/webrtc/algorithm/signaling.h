@@ -20,6 +20,15 @@ typedef struct SignalingCtx *SignalingHandle;
  * out_endpoint capacity: ~256 chars is plenty (KVS hostnames are short). */
 int signaling_resolve_endpoint(const AwsCreds *creds, char *out_endpoint, size_t cap);
 
+/* GetIceServerConfig: fill out_servers with STUN + TURN servers for NAT
+ * traversal. out_servers[0] is always the regional KVS STUN server; TURN
+ * relays (with ephemeral credentials) follow when available. Must be called
+ * after signaling_resolve_endpoint (which captures the HTTPS endpoint used
+ * here). *inout_count is the buffer capacity on entry and the number of
+ * servers written on return. Returns 0 if at least one server was produced
+ * (STUN-only counts), -1 otherwise. */
+int signaling_get_ice_servers(const AwsCreds *creds, IceControllerIceServer_t *out_servers, size_t *inout_count);
+
 /* Build the signed wss:// URL for ConnectAsMaster.
  *
  * KVS role naming gotcha: a camera streaming video to a browser is the
@@ -37,8 +46,15 @@ SignalingHandle signaling_connect(const char *signed_url);
 void signaling_disconnect(SignalingHandle sig);
 
 /* Bind or clear the peer-connection session that inbound ICE_CANDIDATE frames
- * should feed into. The pointer is borrowed; caller owns the session lifetime. */
+ * should feed into. The pointer is borrowed; caller owns the session lifetime.
+ * Clearing (session == NULL) also frees any early ICE candidates buffered but
+ * never flushed for the session being detached. */
 void signaling_set_peer_connection(SignalingHandle sig, PeerConnectionSession_t *session);
+
+/* Replay ICE candidates that arrived in the offer burst before the session was
+ * attached (KVS delivers offer + trickle candidates together). Call once, right
+ * after PeerConnection_SetRemoteDescription. No-op if nothing was buffered. */
+void signaling_flush_early_candidates(SignalingHandle sig);
 
 /* Block until a viewer publishes an SDP offer (or the socket dies). On
  * success returns 0, writes the decoded SDP into out_sdp (null-terminated),

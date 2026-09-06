@@ -45,7 +45,7 @@
 // - multiple simultaneously used STUN/TURN paths per session
 // - TURN becoming a baseline requirement instead of an optional fallback
 #define APP_WEBRTC_ENABLE_SRFLX 1U
-#define APP_WEBRTC_ENABLE_TURN  0U
+#define APP_WEBRTC_ENABLE_TURN  1U
 
 #if APP_WEBRTC_ENABLE_TURN
 #define APP_WEBRTC_MAX_LOCAL_CANDIDATE_COUNT 3U
