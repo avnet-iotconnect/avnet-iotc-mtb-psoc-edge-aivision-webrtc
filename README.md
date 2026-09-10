@@ -48,7 +48,7 @@ To set up the project, please refer to the
 [/IOTCONNECT ModusToolbox&trade; PSOC Edge Developer Guide](DEVELOPER_GUIDE.md)
 
 To quickly evaluate the project without development tools, you can download the pre-built Gestures binary package at
-[avnet-iotc-mtb-psoc-edge-aivision-webrtc-v1.0.0.hex.zip](https://downloads.iotconnect.io/partners/infineon/demos/avnet-iotc-mtb-psoc-edge-aivision-webrtc-v1.0.0.hex.zip).
+[avnet-iotc-mtb-psoc-edge-aivision-webrtc-v1.1.0.hex.zip](https://downloads.iotconnect.io/partners/infineon/demos/avnet-iotc-mtb-psoc-edge-aivision-webrtc-v1.1.0.hex.zip).
 You can skip the VSCode and compiler setup in the Developer Guide and flash the extracted hex file with the MTB Programmer software.
 When flashing, ensure to select the "External Memory" option.
 
