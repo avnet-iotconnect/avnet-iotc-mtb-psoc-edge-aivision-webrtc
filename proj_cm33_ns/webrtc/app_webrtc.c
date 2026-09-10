@@ -374,7 +374,7 @@ static void wait_for_session_idle(void) {
  * session struct, pump media until DTLS dies / WSS dies / streaming stops,
  * then close. Returns 0 on graceful end, -1 if signaling is dead and the
  * outer loop should rebuild WSS. */
-static int run_viewer_session(SignalingHandle sig) {
+static int run_viewer_session(SignalingHandle sig, PeerConnectionSessionConfiguration_t *ice_cfg) {
     int rc = -1;
     bool media_started = false;
     bool peer_attached = false;
@@ -410,6 +410,22 @@ static int run_viewer_session(SignalingHandle sig) {
             printf("[webrtc] PeerConnection_SetOnLocalCandidateReady failed\n");
             goto cleanup;
         }
+
+        /* Apply this session's ICE servers (STUN for srflx, TURN for relay)
+         * BEFORE Start so candidate gathering uses them. Without srflx/relay the
+         * board only offers its private host IP and can't traverse NAT to the
+         * viewer — connectivity checks never succeed and the video stays black.
+         * Non-fatal on failure: host/srflx paths may still connect. */
+        if (NULL != ice_cfg && ice_cfg->iceServersCount > 0U) {
+            if (PEER_CONNECTION_RESULT_OK != PeerConnection_AddIceServerConfig(&s_session, ice_cfg)) {
+                printf("[webrtc] PeerConnection_AddIceServerConfig failed (continuing)\n");
+            } else {
+                printf("[webrtc] applied %u ICE server(s) for this session\n", (unsigned) ice_cfg->iceServersCount);
+            }
+        } else {
+            printf("[webrtc] no ICE servers configured — NAT traversal may fail\n");
+        }
+
         if (PEER_CONNECTION_RESULT_OK != PeerConnection_Start(&s_session)) {
             printf("[webrtc] PeerConnection_Start failed\n");
             goto cleanup;
@@ -428,6 +444,14 @@ static int run_viewer_session(SignalingHandle sig) {
             printf("[webrtc] PeerConnection_SetRemoteDescription failed\n");
             goto cleanup;
         }
+
+        /* KVS delivers the offer and the viewer's already-gathered ICE
+         * candidates in one burst, all consumed by signaling_wait_for_offer
+         * before the session was attached above. Replay those buffered
+         * candidates now that the remote description (remote ufrag/pwd) is set,
+         * so ICE has remote candidates to pair with. Without this the browser
+         * shows black video: connectivity checks never start. */
+        signaling_flush_early_candidates(sig);
     }
 
     {
@@ -533,6 +557,10 @@ static int run_signaling_session(void) {
     AwsCreds aws_creds;
     SignalingHandle sig = NULL;
     int rc = -1;
+    /* ~5.6 KB — kept on this task's stack (240 KB) rather than .bss, which is
+     * nearly full. Reused for every viewer session on this WSS. */
+    PeerConnectionSessionConfiguration_t ice_cfg;
+    memset(&ice_cfg, 0, sizeof(ice_cfg));
 
     if (0 != populate_creds(&aws_creds, region_buf, sizeof(region_buf))) {
         return -1;
@@ -542,12 +570,26 @@ static int run_signaling_session(void) {
         return -1;
     }
 
+    /* Fetch STUN/TURN servers now that resolve_endpoint captured the HTTPS
+     * endpoint. Non-fatal: STUN-only (or host-only) still lets the flow run,
+     * just with reduced NAT-traversal reach. */
+    {
+        size_t nsrv = ICE_CONTROLLER_MAX_ICE_SERVER_COUNT;
+        if (0 == signaling_get_ice_servers(&aws_creds, ice_cfg.iceServers, &nsrv)) {
+            ice_cfg.iceServersCount = nsrv;
+            printf("[webrtc] fetched %u ICE server(s)\n", (unsigned) nsrv);
+        } else {
+            ice_cfg.iceServersCount = 0;
+            printf("[webrtc] ICE server fetch failed; NAT traversal may not work\n");
+        }
+    }
+
     if (0 != signaling_open_session(&aws_creds, wss_endpoint, &sig)) {
         return -1;
     }
 
     while (s_streaming_requested) {
-        int viewer_rc = run_viewer_session(sig);
+        int viewer_rc = run_viewer_session(sig, &ice_cfg);
         if (viewer_rc < 0) {
             /* WSS-level failure — rebuild WSS via the outer loop. */
             break;
