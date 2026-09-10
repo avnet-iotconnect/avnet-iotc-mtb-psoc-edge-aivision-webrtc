@@ -382,14 +382,18 @@ int main ( void )
 
     /* \x1b[2J\x1b[;H - ANSI ESC sequence for clear screen */
     // printf("\x1b[2J\x1b[;H");
+
+    /* Disable printouts so we can see the application startup properly */
+#ifndef ENABLE_CM55_STARTUP_PRITS
+
     printf("\r\n******************PSOC Edge MCU: Machine learning DEEPCRAFT deploy vision******************\r\n");
     printf("Build Version: %d.%d.%d\r\n", MAJOR_VERSION, MINOR_VERSION, PATCH_VERSION);
     printf("Build Date: %s\r\n", __DATE__);
     printf("Build Time: %s\r\n", __TIME__);
-    printf("Following cameras is supported:\r\n");
+    printf("Following camera is supported:\r\n");
     printf("OV7675 0.3MP DVP Camera: https://blog.arducam.com/products/camera-breakout-board/0-3mp-ov7675\r\n");
     printf("\r\n*************************************************************************************\r\n");
-
+#endif
 
     result = cy_rtos_semaphore_init(&usb_semaphore, NUM_IMAGE_BUFFERS, 0);
     if ( CY_RSLT_SUCCESS != result ) {

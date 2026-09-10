@@ -28,7 +28,7 @@
 
 /////////////////////////////////////////////////////////////////////////////
 
-#define APP_VERSION "1.0.0"
+#define APP_VERSION "1.1.0"
 
 typedef enum UserInputYnStatus {
 	APP_INPUT_NONE = 0,
