@@ -17,6 +17,7 @@ libs/
 GeneratedSource/
 *.lock
 .mtbqueryapi
+.modustoolbox
 
 # ModusToolbox BSP files. Any custom BSP file for code examples is shipped within the 'templates' folder
 # bsps/
