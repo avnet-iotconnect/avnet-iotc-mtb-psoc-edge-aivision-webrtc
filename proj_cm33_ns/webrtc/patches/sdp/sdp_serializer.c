@@ -136,7 +136,7 @@ SdpResult_t SdpSerializer_AddU32( SdpSerializerContext_t * pCtx,
                                    "%c"
                                    "=%" SDP_PRINT_FMT_UINT32 "\r\n",
                                    type,
-                                   value );
+                                   ( unsigned long ) value );
         /* LCOV_EXCL_START */
         if( snprintfRetVal < 0 )
         {

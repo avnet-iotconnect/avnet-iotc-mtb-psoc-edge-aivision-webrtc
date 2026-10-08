@@ -423,7 +423,7 @@ PeerConnectionResult_t PeerConnectionJitterBuffer_Create( PeerConnectionJitterBu
     if( ( pJitterBuffer == NULL ) ||
         ( codec == 0 ) )
     {
-        LogError( ( "Invalid input, pJitterBuffer: %p, codec: %lu", pJitterBuffer, codec ) );
+        LogError( ( "Invalid input, pJitterBuffer: %p, codec: %lu", pJitterBuffer, ( unsigned long ) codec ) );
         ret = PEER_CONNECTION_RESULT_BAD_PARAMETER;
     }
 
@@ -449,12 +449,12 @@ PeerConnectionResult_t PeerConnectionJitterBuffer_Create( PeerConnectionJitterBu
         pJitterBuffer->pOnFrameReadyCallbackContext = pOnFrameReadyCallbackContext;
         pJitterBuffer->onFrameDropCallbackFunc = onFrameDropCallbackFunc;
         pJitterBuffer->pOnFrameDropCallbackContext = pOnFrameDropCallbackContext;
-        LogInfo( ( "Creating jitter buffer with tolerence RTP timestamp: %lu", pJitterBuffer->tolerenceRtpTimeStamp ) );
+        LogInfo( ( "Creating jitter buffer with tolerence RTP timestamp: %lu", ( unsigned long ) pJitterBuffer->tolerenceRtpTimeStamp ) );
     }
 
     if( ret == PEER_CONNECTION_RESULT_OK )
     {
-        LogInfo( ( "Setting jitter buffer with codec: 0x%lx.", codec ) );
+        LogInfo( ( "Setting jitter buffer with codec: 0x%lx.", ( unsigned long ) codec ) );
         /* Pick get property function based on codec. */
         if( TRANSCEIVER_IS_CODEC_ENABLED( codec,
                                           TRANSCEIVER_RTC_CODEC_H264_PROFILE_42E01F_LEVEL_ASYMMETRY_ALLOWED_PACKETIZATION_BIT ) )
@@ -737,7 +737,7 @@ PeerConnectionResult_t PeerConnectionJitterBuffer_FillFrame( PeerConnectionJitte
         }
         else
         {
-            LogWarn( ( "No fill frame function pointer for this jitter buffer, codec: 0x%lx", pJitterBuffer->codec ) );
+            LogWarn( ( "No fill frame function pointer for this jitter buffer, codec: 0x%lx", ( unsigned long ) pJitterBuffer->codec ) );
         }
     }
 

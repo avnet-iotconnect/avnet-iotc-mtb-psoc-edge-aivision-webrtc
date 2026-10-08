@@ -149,7 +149,7 @@ int32_t RecvPacketTls( IceControllerSocketContext_t * pSocketContext,
 
     if( ret < 0 )
     {
-        LogError( ( "Receiving %ld from TLS connection", ret ) );
+        LogError( ( "Receiving %ld from TLS connection", ( long ) ret ) );
     }
 
     return ret;
@@ -307,7 +307,7 @@ static IceControllerResult_t UpdateNominatedSocketContext( IceControllerContext_
                                                                            NULL );
                     if( retPeerToPeerConnectionFound != 0 )
                     {
-                        LogError( ( "Fail to handle peer to peer connection found event, ret: %ld", retPeerToPeerConnectionFound ) );
+                        LogError( ( "Fail to handle peer to peer connection found event, ret: %ld", ( long ) retPeerToPeerConnectionFound ) );
                     }
                 }
                 else

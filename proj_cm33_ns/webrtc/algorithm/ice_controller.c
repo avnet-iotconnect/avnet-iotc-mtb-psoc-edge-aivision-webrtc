@@ -1908,16 +1908,16 @@ void IceController_UpdateTimerInterval( IceControllerContext_t * pCtx,
                                              0U );
         if( retTimer != TIMER_CONTROLLER_RESULT_OK )
         {
-            LogError( ( "Fail to re-start timer, result: %d, intervalMs: %lu", retTimer, newIntervalMs ) );
+            LogError( ( "Fail to re-start timer, result: %d, intervalMs: %lu", retTimer, ( unsigned long ) newIntervalMs ) );
         }
         else if( newIntervalMs != pCtx->timerIntervalMs )
         {
-            LogInfo( ( "Timer interval is updated from %lu to %lu", pCtx->timerIntervalMs, newIntervalMs ) );
+            LogInfo( ( "Timer interval is updated from %lu to %lu", ( unsigned long ) pCtx->timerIntervalMs, ( unsigned long ) newIntervalMs ) );
             pCtx->timerIntervalMs = newIntervalMs;
         }
         else
         {
-            LogVerbose( ( "Timer interval is %lu", pCtx->timerIntervalMs ) );
+            LogVerbose( ( "Timer interval is %lu", ( unsigned long ) pCtx->timerIntervalMs ) );
         }
     }
 }

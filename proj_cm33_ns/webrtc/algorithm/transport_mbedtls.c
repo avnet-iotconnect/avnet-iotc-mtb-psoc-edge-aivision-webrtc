@@ -258,7 +258,7 @@ static int32_t setRootCa( SSLContext_t * pSslContext,
     {
         LogError( ( "Failed to parse server root CA certificate: %.*s, result: -0x%lx mbedTLSError= %s : %s.",
                     ( int ) rootCaSize, pRootCa,
-                    mbedtlsError,
+                    ( unsigned long ) mbedtlsError,
                     mbedtlsHighLevelCodeOrDefault( mbedtlsError ),
                     mbedtlsLowLevelCodeOrDefault( mbedtlsError ) ) );
     }
@@ -298,7 +298,7 @@ static int32_t setRootCaPath( SSLContext_t * pSslContext,
     {
         LogError( ( "Failed to parse server root CA certificate: %s, result: -0x%lx mbedTLSError= %s : %s.",
                     caFilePath,
-                    mbedtlsError,
+                    ( unsigned long ) mbedtlsError,
                     mbedtlsHighLevelCodeOrDefault( mbedtlsError ),
                     mbedtlsLowLevelCodeOrDefault( mbedtlsError ) ) );
     }
@@ -975,7 +975,7 @@ int32_t TLS_FreeRTOS_send( TlsNetworkContext_t * pTlsNetworkContext,
         else if( tlsStatus < 0 )
         {
             LogError( ( "Failed to send TLS data: mbedTLSError=-0x%lx %s : %s.",
-                        -tlsStatus,
+                        ( unsigned long ) -tlsStatus,
                         mbedtlsHighLevelCodeOrDefault( tlsStatus ),
                         mbedtlsLowLevelCodeOrDefault( tlsStatus ) ) );
         }

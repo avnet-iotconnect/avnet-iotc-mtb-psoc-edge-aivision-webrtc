@@ -628,7 +628,7 @@ PeerConnectionResult_t PeerConnectionSrtp_HandleSrtpPacket( PeerConnectionSessio
         }
         else
         {
-            LogWarn( ( "Received unknown SSRC: %lu RTP packet.", rtpPacket.header.ssrc ) );
+            LogWarn( ( "Received unknown SSRC: %lu RTP packet.", ( unsigned long ) rtpPacket.header.ssrc ) );
             ret = PEER_CONNECTION_RESULT_FAIL_RTP_RX_NO_MATCHING_SSRC;
         }
     }
