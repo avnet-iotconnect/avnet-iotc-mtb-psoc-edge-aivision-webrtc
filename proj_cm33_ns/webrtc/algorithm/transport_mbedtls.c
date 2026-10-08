@@ -258,7 +258,7 @@ static int32_t setRootCa( SSLContext_t * pSslContext,
     {
         LogError( ( "Failed to parse server root CA certificate: %.*s, result: -0x%lx mbedTLSError= %s : %s.",
                     ( int ) rootCaSize, pRootCa,
-                    ( unsigned long ) mbedtlsError,
+                    ( unsigned long ) -mbedtlsError,
                     mbedtlsHighLevelCodeOrDefault( mbedtlsError ),
                     mbedtlsLowLevelCodeOrDefault( mbedtlsError ) ) );
     }
