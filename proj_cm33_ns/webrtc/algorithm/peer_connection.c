@@ -97,7 +97,7 @@ static void PeerConnection_SessionTask( void * pParameter )
                                       portMAX_DELAY );
         if( ( uxBits & PEER_CONNECTION_START_UP_BARRIER_BIT ) != PEER_CONNECTION_START_UP_BARRIER_BIT )
         {
-            LogError( ( "Unexpected return value from start up barrier, uxBits: 0x%lx", uxBits ) );
+            LogError( ( "Unexpected return value from start up barrier, uxBits: 0x%lx", ( unsigned long ) uxBits ) );
             continue;
         }
 
@@ -1459,7 +1459,7 @@ static PeerConnectionResult_t SetDefaultPayloadTypes( PeerConnectionSession_t * 
     const Transceiver_t * pTransceiver = NULL;
 
     LogInfo( ( "Setting default payload types for session, transceiverCount: %lu",
-               pSession->transceiverCount ) );
+               ( unsigned long ) pSession->transceiverCount ) );
     for( i = 0; i < pSession->transceiverCount && ret == PEER_CONNECTION_RESULT_OK; i++ )
     {
         pTransceiver = pSession->pTransceivers[i];
@@ -1467,7 +1467,7 @@ static PeerConnectionResult_t SetDefaultPayloadTypes( PeerConnectionSession_t * 
         if( pTransceiver == NULL )
         {
             LogError( ( "This is not expected, keep this condition here to avoid NULL accessing, transceiverCount: %lu, current index: %d",
-                        pSession->transceiverCount,
+                        ( unsigned long ) pSession->transceiverCount,
                         i ) );
             ret = PEER_CONNECTION_RESULT_UNKNOWN_TRANSCEIVER;
             break;
@@ -1847,7 +1847,7 @@ PeerConnectionResult_t PeerConnection_SetRemoteDescription( PeerConnectionSessio
 
         if( retDtls != 0 )
         {
-            LogError( ( "Failed to initialize DTLS session, result: %ld", retDtls ) );
+            LogError( ( "Failed to initialize DTLS session, result: %ld", ( long ) retDtls ) );
             ret = PEER_CONNECTION_RESULT_FAIL_INIT_DTLS_SESSION;
         }
     }
@@ -2114,7 +2114,7 @@ PeerConnectionResult_t PeerConnection_MatchTransceiverBySsrc( PeerConnectionSess
 
         if( i == pSession->transceiverCount )
         {
-            LogWarn( ( "No transceiver for SSRC: %lu", ssrc ) );
+            LogWarn( ( "No transceiver for SSRC: %lu", ( unsigned long ) ssrc ) );
             ret = PEER_CONNECTION_RESULT_UNKNOWN_SSRC;
         }
     }

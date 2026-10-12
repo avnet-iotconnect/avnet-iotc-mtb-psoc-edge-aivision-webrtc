@@ -130,7 +130,7 @@ static void handle_error(uint32_t status, char *message)
 {
     if (CY_EM_EEPROM_SUCCESS != status) {
         if (CY_EM_EEPROM_REDUNDANT_COPY_USED != status) {
-            printf("%s Status=%lx", message, status);
+            printf("%s Status=%lx", message, ( unsigned long ) status);
         } else {
             printf("%s","Main copy is corrupted. Redundant copy in Emulated EEPROM is used \r\n");
         }

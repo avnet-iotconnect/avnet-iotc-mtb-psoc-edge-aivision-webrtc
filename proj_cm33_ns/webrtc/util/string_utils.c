@@ -15,6 +15,7 @@
  */
 
 #include "string_utils.h"
+#include <inttypes.h>
 
 StringUtilsResult_t StringUtils_ConvertStringToUl( const char * pStr,
                                                    size_t strLength,
@@ -70,7 +71,7 @@ StringUtilsResult_t StringUtils_ConvertStringToHex( const char * pStr,
 
     if( ret == STRING_UTILS_RESULT_OK )
     {
-        result = sscanf( pStr, "%lx", pOutUl );
+        result = sscanf( pStr, "%" SCNx32, pOutUl );
         if( result < 1 )
         {
             ret = STRING_UTILS_RESULT_NON_NUMBERIC_STRING;

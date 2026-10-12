@@ -36,8 +36,8 @@ PeerConnectionResult_t PeerConnectionRollingBuffer_Create( PeerConnectionRolling
     {
         LogError( ( "Invalid input, pRollingBuffer: %p, rollingbufferBitRate: %lu, pFrame: %lu, maxSizePerPacket: %u",
                     pRollingBuffer,
-                    rollingbufferBitRate,
-                    rollingbufferDurationSec,
+                    ( unsigned long ) rollingbufferBitRate,
+                    ( unsigned long ) rollingbufferDurationSec,
                     maxSizePerPacket ) );
         ret = PEER_CONNECTION_RESULT_BAD_PARAMETER;
     }

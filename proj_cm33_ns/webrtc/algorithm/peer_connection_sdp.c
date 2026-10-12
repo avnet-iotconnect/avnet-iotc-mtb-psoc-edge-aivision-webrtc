@@ -302,13 +302,13 @@ static uint32_t CollectAttributesCodec( SdpControllerAttributes_t * pAttributes,
                             LogWarn( ( "StringUtils_ConvertStringToUl fail, result %d, converting %.*s to %lu",
                                        stringResult,
                                        ( int ) pAttributes[i].attributeValueLength - PEER_CONNECTION_SDP_CODEC_H264_VALUE_LENGTH, pAttributes[i].pAttributeValue,
-                                       aptPayload ) );
+                                       ( unsigned long ) aptPayload ) );
                         }
                         else
                         {
                             TRANSCEIVER_ENABLE_CODEC( codecBitMap, TRANSCEIVER_RTC_CODEC_H264_PROFILE_42E01F_LEVEL_ASYMMETRY_ALLOWED_PACKETIZATION_BIT );
                             codecPayloads[ TRANSCEIVER_RTC_CODEC_H264_PROFILE_42E01F_LEVEL_ASYMMETRY_ALLOWED_PACKETIZATION_BIT ] = PEER_CONNECTION_SDP_SET_PAYLOAD( 0, aptPayload );
-                            LogDebug( ( "Found H264 codec: %lu", codecPayloads[ TRANSCEIVER_RTC_CODEC_H264_PROFILE_42E01F_LEVEL_ASYMMETRY_ALLOWED_PACKETIZATION_BIT ] ) );
+                            LogDebug( ( "Found H264 codec: %lu", ( unsigned long ) codecPayloads[ TRANSCEIVER_RTC_CODEC_H264_PROFILE_42E01F_LEVEL_ASYMMETRY_ALLOWED_PACKETIZATION_BIT ] ) );
                             highestH264Score = h264Score;
                         }
                     }
@@ -322,13 +322,13 @@ static uint32_t CollectAttributesCodec( SdpControllerAttributes_t * pAttributes,
                         LogWarn( ( "StringUtils_ConvertStringToUl fail, result %d, converting %.*s to %lu",
                                    stringResult,
                                    ( int ) pAttributes[i].attributeValueLength - PEER_CONNECTION_SDP_CODEC_VP8_VALUE_LENGTH, pAttributes[i].pAttributeValue,
-                                   aptPayload ) );
+                                   ( unsigned long ) aptPayload ) );
                     }
                     else
                     {
                         TRANSCEIVER_ENABLE_CODEC( codecBitMap, TRANSCEIVER_RTC_CODEC_VP8_BIT );
                         codecPayloads[ TRANSCEIVER_RTC_CODEC_VP8_BIT ] = PEER_CONNECTION_SDP_SET_PAYLOAD( 0, aptPayload );
-                        LogDebug( ( "Found VP8 codec: %lu", codecPayloads[ TRANSCEIVER_RTC_CODEC_VP8_BIT ] ) );
+                        LogDebug( ( "Found VP8 codec: %lu", ( unsigned long ) codecPayloads[ TRANSCEIVER_RTC_CODEC_VP8_BIT ] ) );
                     }
                 }
                 else if( !TRANSCEIVER_IS_CODEC_ENABLED( codecBitMap, TRANSCEIVER_RTC_CODEC_H265_BIT ) && ( pAttributes[i].attributeValueLength >= PEER_CONNECTION_SDP_CODEC_H265_VALUE_LENGTH ) &&
@@ -340,13 +340,13 @@ static uint32_t CollectAttributesCodec( SdpControllerAttributes_t * pAttributes,
                         LogWarn( ( "StringUtils_ConvertStringToUl fail, result %d, converting %.*s to %lu",
                                    stringResult,
                                    ( int ) pAttributes[i].attributeValueLength - PEER_CONNECTION_SDP_CODEC_H265_VALUE_LENGTH, pAttributes[i].pAttributeValue,
-                                   aptPayload ) );
+                                   ( unsigned long ) aptPayload ) );
                     }
                     else
                     {
                         TRANSCEIVER_ENABLE_CODEC( codecBitMap, TRANSCEIVER_RTC_CODEC_H265_BIT );
                         codecPayloads[ TRANSCEIVER_RTC_CODEC_H265_BIT ] = PEER_CONNECTION_SDP_SET_PAYLOAD( 0, aptPayload );
-                        LogDebug( ( "Found H265 codec: %lu", codecPayloads[ TRANSCEIVER_RTC_CODEC_H265_BIT ] ) );
+                        LogDebug( ( "Found H265 codec: %lu", ( unsigned long ) codecPayloads[ TRANSCEIVER_RTC_CODEC_H265_BIT ] ) );
                     }
                 }
                 else if( !TRANSCEIVER_IS_CODEC_ENABLED( codecBitMap, TRANSCEIVER_RTC_CODEC_OPUS_BIT ) && ( pAttributes[i].attributeValueLength >= PEER_CONNECTION_SDP_CODEC_OPUS_VALUE_LENGTH ) &&
@@ -358,13 +358,13 @@ static uint32_t CollectAttributesCodec( SdpControllerAttributes_t * pAttributes,
                         LogWarn( ( "StringUtils_ConvertStringToUl fail, result %d, converting %.*s to %lu",
                                    stringResult,
                                    ( int ) pAttributes[i].attributeValueLength - PEER_CONNECTION_SDP_CODEC_OPUS_VALUE_LENGTH, pAttributes[i].pAttributeValue,
-                                   aptPayload ) );
+                                   ( unsigned long ) aptPayload ) );
                     }
                     else
                     {
                         TRANSCEIVER_ENABLE_CODEC( codecBitMap, TRANSCEIVER_RTC_CODEC_OPUS_BIT );
                         codecPayloads[ TRANSCEIVER_RTC_CODEC_OPUS_BIT ] = PEER_CONNECTION_SDP_SET_PAYLOAD( 0, aptPayload );
-                        LogDebug( ( "Found OPUS codec: %lu", codecPayloads[ TRANSCEIVER_RTC_CODEC_OPUS_BIT ] ) );
+                        LogDebug( ( "Found OPUS codec: %lu", ( unsigned long ) codecPayloads[ TRANSCEIVER_RTC_CODEC_OPUS_BIT ] ) );
                     }
                 }
                 else if( !TRANSCEIVER_IS_CODEC_ENABLED( codecBitMap, TRANSCEIVER_RTC_CODEC_MULAW_BIT ) && ( pAttributes[i].attributeValueLength >= PEER_CONNECTION_SDP_CODEC_MULAW_VALUE_LENGTH ) &&
@@ -376,13 +376,13 @@ static uint32_t CollectAttributesCodec( SdpControllerAttributes_t * pAttributes,
                         LogWarn( ( "StringUtils_ConvertStringToUl fail, result %d, converting %.*s to %lu",
                                    stringResult,
                                    ( int ) pAttributes[i].attributeValueLength - PEER_CONNECTION_SDP_CODEC_MULAW_VALUE_LENGTH, pAttributes[i].pAttributeValue,
-                                   aptPayload ) );
+                                   ( unsigned long ) aptPayload ) );
                     }
                     else
                     {
                         TRANSCEIVER_ENABLE_CODEC( codecBitMap, TRANSCEIVER_RTC_CODEC_MULAW_BIT );
                         codecPayloads[ TRANSCEIVER_RTC_CODEC_MULAW_BIT ] = PEER_CONNECTION_SDP_SET_PAYLOAD( 0, aptPayload );
-                        LogDebug( ( "Found MULAW codec: %lu", codecPayloads[ TRANSCEIVER_RTC_CODEC_MULAW_BIT ] ) );
+                        LogDebug( ( "Found MULAW codec: %lu", ( unsigned long ) codecPayloads[ TRANSCEIVER_RTC_CODEC_MULAW_BIT ] ) );
                     }
                 }
                 else if( !TRANSCEIVER_IS_CODEC_ENABLED( codecBitMap, TRANSCEIVER_RTC_CODEC_ALAW_BIT ) && ( pAttributes[i].attributeValueLength >= PEER_CONNECTION_SDP_CODEC_ALAW_VALUE_LENGTH ) &&
@@ -394,13 +394,13 @@ static uint32_t CollectAttributesCodec( SdpControllerAttributes_t * pAttributes,
                         LogWarn( ( "StringUtils_ConvertStringToUl fail, result %d, converting %.*s to %lu",
                                    stringResult,
                                    ( int ) pAttributes[i].attributeValueLength - PEER_CONNECTION_SDP_CODEC_ALAW_VALUE_LENGTH, pAttributes[i].pAttributeValue,
-                                   aptPayload ) );
+                                   ( unsigned long ) aptPayload ) );
                     }
                     else
                     {
                         TRANSCEIVER_ENABLE_CODEC( codecBitMap, TRANSCEIVER_RTC_CODEC_ALAW_BIT );
                         codecPayloads[ TRANSCEIVER_RTC_CODEC_ALAW_BIT ] = PEER_CONNECTION_SDP_SET_PAYLOAD( 0, aptPayload );
-                        LogDebug( ( "Found ALAW codec: %lu", codecPayloads[ TRANSCEIVER_RTC_CODEC_ALAW_BIT ] ) );
+                        LogDebug( ( "Found ALAW codec: %lu", ( unsigned long ) codecPayloads[ TRANSCEIVER_RTC_CODEC_ALAW_BIT ] ) );
                     }
                 }
                 else
@@ -427,7 +427,7 @@ static uint32_t CollectAttributesCodec( SdpControllerAttributes_t * pAttributes,
                     LogWarn( ( "StringUtils_ConvertStringToUl RTX payload fail, result %d, converting %.*s to %lu",
                                stringResult,
                                ( int ) pAttributes[i].attributeValueLength, pAttributes[i].pAttributeValue,
-                               rtxPayload ) );
+                               ( unsigned long ) rtxPayload ) );
                     continue;
                 }
 
@@ -440,7 +440,7 @@ static uint32_t CollectAttributesCodec( SdpControllerAttributes_t * pAttributes,
                     LogWarn( ( "StringUtils_ConvertStringToUl APT payload fail, result %d, converting %.*s to %lu",
                                stringResult,
                                ( int ) pAttributes[i].attributeValueLength, pAttributes[i].pAttributeValue,
-                               aptPayload ) );
+                               ( unsigned long ) aptPayload ) );
                     continue;
                 }
 
@@ -535,7 +535,7 @@ static PeerConnectionResult_t GetPayloadTypesFromMedia( SdpControllerMediaDescri
         *pCodecBitMap |= CollectAttributesCodec( pMediaDescription->attributes,
                                                  pMediaDescription->mediaAttributesCount,
                                                  codecPayloads );
-        LogDebug( ( "Scanned codec from remote media description, *pCodecBitMap: 0x%lx", *pCodecBitMap ) );
+        LogDebug( ( "Scanned codec from remote media description, *pCodecBitMap: 0x%lx", ( unsigned long ) *pCodecBitMap ) );
     }
 
     return ret;
@@ -610,7 +610,7 @@ static PeerConnectionResult_t SetPayloadType( PeerConnectionSession_t * pSession
 
     if( ( ret == PEER_CONNECTION_RESULT_OK ) && ( trackKind != TRANSCEIVER_TRACK_KIND_DATA_CHANNEL ) )
     {
-        LogDebug( ( "Total transceiverCount: %lu", pSession->transceiverCount ) );
+        LogDebug( ( "Total transceiverCount: %lu", ( unsigned long ) pSession->transceiverCount ) );
         for( currentTransceiverIdx = 0; currentTransceiverIdx < pSession->transceiverCount; currentTransceiverIdx++ )
         {
             LogDebug( ( "currentTransceiverIdx: %d", currentTransceiverIdx ) );
@@ -622,7 +622,7 @@ static PeerConnectionResult_t SetPayloadType( PeerConnectionSession_t * pSession
                             currentTransceiverIdx,
                             currentTransceiverIdx, isTransceiverCodecSet[currentTransceiverIdx],
                             currentTransceiverIdx, pSession->pTransceivers[currentTransceiverIdx]->trackKind,
-                            currentTransceiverIdx, pSession->pTransceivers[currentTransceiverIdx]->codecBitMap ) );
+                            currentTransceiverIdx, ( unsigned long ) pSession->pTransceivers[currentTransceiverIdx]->codecBitMap ) );
                 continue;
             }
 
@@ -730,11 +730,11 @@ static PeerConnectionResult_t SetPayloadType( PeerConnectionSession_t * pSession
 
         if( *pIsTargetCodecPayloadSet == 1 )
         {
-            LogDebug( ( "Set payload type successfully, idx: %d, payload: 0x%lx, RTX payload: 0x%lx", currentTransceiverIdx, *pTargetCodecPayload, *pTargetCodecRtxPayload ) );
+            LogDebug( ( "Set payload type successfully, idx: %d, payload: 0x%lx, RTX payload: 0x%lx", currentTransceiverIdx, ( unsigned long ) *pTargetCodecPayload, ( unsigned long ) *pTargetCodecRtxPayload ) );
         }
         else
         {
-            LogWarn( ( "Unable to set payload type, mediaCodecBitMap: 0x%lx", *pCodecBitMap ) );
+            LogWarn( ( "Unable to set payload type, mediaCodecBitMap: 0x%lx", ( unsigned long ) *pCodecBitMap ) );
         }
     }
 
@@ -1000,7 +1000,7 @@ static void SetReceiverSsrc( PeerConnectionBufferSessionDescription_t * pBufferS
                     LogError( ( "StringUtils_ConvertStringToUl fail, result %d, converting %.*s to %lu",
                                 stringResult,
                                 ( int ) pMediaDescription->attributes[j].attributeValueLength, pMediaDescription->attributes[j].pAttributeValue,
-                                *pMediaSsrc ) );
+                                ( unsigned long ) *pMediaSsrc ) );
                     continue;
                 }
 

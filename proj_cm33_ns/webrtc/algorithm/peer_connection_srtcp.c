@@ -61,7 +61,7 @@ static PeerConnectionResult_t PeerConnectionSrtcp_MatchRemoteBySsrc( PeerConnect
     {
         if( ( ssrc != pSession->rtpConfig.remoteAudioSsrc ) && ( ssrc != pSession->rtpConfig.remoteVideoSsrc ) )
         {
-            LogWarn( ( "No transceiver for SSRC: %lu", ssrc ) );
+            LogWarn( ( "No transceiver for SSRC: %lu", ( unsigned long ) ssrc ) );
             ret = PEER_CONNECTION_RESULT_UNKNOWN_SSRC;
         }
     }
@@ -203,12 +203,12 @@ static PeerConnectionResult_t ResendSrtpPacket( PeerConnectionSession_t * pSessi
 
         if( resultIceController != ICE_CONTROLLER_RESULT_OK )
         {
-            LogWarn( ( "Fail to re-send RTP packet, ret: %d, seq: %u, SSRC: 0x%lx", resultIceController, rtpSeq, ssrc ) );
+            LogWarn( ( "Fail to re-send RTP packet, ret: %d, seq: %u, SSRC: 0x%lx", resultIceController, rtpSeq, ( unsigned long ) ssrc ) );
             ret = PEER_CONNECTION_RESULT_FAIL_ICE_CONTROLLER_RESEND_RTP_PACKET;
         }
         else
         {
-            LogDebug( ( "Re-send RTP successfully, RTP seq: %u, SSRC: 0x%lx", rtpSeq, ssrc ) );
+            LogDebug( ( "Re-send RTP successfully, RTP seq: %u, SSRC: 0x%lx", rtpSeq, ( unsigned long ) ssrc ) );
         }
     }
 
@@ -265,7 +265,7 @@ static PeerConnectionResult_t OnRtcpFirEvent( PeerConnectionSession_t * pSession
     }
     else if( ret == PEER_CONNECTION_RESULT_UNKNOWN_SSRC )
     {
-        LogWarn( ( "Received FIR for non existing ssrc: %lu", firPacket.senderSsrc ) );
+        LogWarn( ( "Received FIR for non existing ssrc: %lu", ( unsigned long ) firPacket.senderSsrc ) );
     }
     else
     {
@@ -474,7 +474,7 @@ static PeerConnectionResult_t OnRtcpPliEvent( PeerConnectionSession_t * pSession
     }
     else if( ret == PEER_CONNECTION_RESULT_UNKNOWN_SSRC )
     {
-        LogError( ( "Received PLI for non existing ssrc: %lu", pliPacket.mediaSourceSsrc ) );
+        LogError( ( "Received PLI for non existing ssrc: %lu", ( unsigned long ) pliPacket.mediaSourceSsrc ) );
     }
     else
     {
@@ -528,7 +528,7 @@ static PeerConnectionResult_t OnRtcpSliEvent( PeerConnectionSession_t * pSession
     }
     else if( ret == PEER_CONNECTION_RESULT_UNKNOWN_SSRC )
     {
-        LogWarn( ( "Received SLI for non existing ssrc: %lu", sliPacket.mediaSourceSsrc ) );
+        LogWarn( ( "Received SLI for non existing ssrc: %lu", ( unsigned long ) sliPacket.mediaSourceSsrc ) );
         ret = PEER_CONNECTION_RESULT_OK;
     }
     else
@@ -586,7 +586,7 @@ static PeerConnectionResult_t OnRtcpRembEvent( PeerConnectionSession_t * pSessio
             }
             else if( ret == PEER_CONNECTION_RESULT_UNKNOWN_SSRC )
             {
-                LogWarn( ( "Received REMB for non existing ssrc: %lu", rembPacket.pSsrcList[ i ] ) );
+                LogWarn( ( "Received REMB for non existing ssrc: %lu", ( unsigned long ) rembPacket.pSsrcList[ i ] ) );
             }
             else
             {
@@ -647,15 +647,15 @@ static PeerConnectionResult_t OnRtcpSenderReportEvent( PeerConnectionSession_t *
                                                      senderReport.senderSsrc );
 
         LogVerbose( ( "RTCP_PACKET_SENDER_REPORT, SSRC: %lu, NTP Time (low32) %lu RTP Time: %lu, PacketCount: %lu, OctetCount: %lu",
-                      senderReport.senderSsrc,
+                      ( unsigned long ) senderReport.senderSsrc,
                       ( unsigned long ) senderReport.senderInfo.ntpTime,
-                      senderReport.senderInfo.rtpTime,
-                      senderReport.senderInfo.packetCount,
-                      senderReport.senderInfo.octetCount ) );
+                      ( unsigned long ) senderReport.senderInfo.rtpTime,
+                      ( unsigned long ) senderReport.senderInfo.packetCount,
+                      ( unsigned long ) senderReport.senderInfo.octetCount ) );
 
         if( ret == PEER_CONNECTION_RESULT_UNKNOWN_SSRC )
         {
-            LogWarn( ( "Received sender report for non existing ssrc: %lu", senderReport.senderSsrc ) );
+            LogWarn( ( "Received sender report for non existing ssrc: %lu", ( unsigned long ) senderReport.senderSsrc ) );
             ret = PEER_CONNECTION_RESULT_OK;
         }
     }
@@ -724,18 +724,18 @@ static PeerConnectionResult_t OnRtcpReceiverReportEvent( PeerConnectionSession_t
                                                          &pTransceiver );
 
             LogDebug( ( "RTCP_PACKET_TYPE_RECEIVER_REPORT, sender SSRC: %lu, source SSRC: %lu, fraction loss: %u, cumulative loss: %lu, highest seq: %lu, jit: %lu, lsr: %lu, dlsr: %lu",
-                        receiverReport.senderSsrc,
-                        receiverReport.pReceptionReports[ 0 ].sourceSsrc,
+                        ( unsigned long ) receiverReport.senderSsrc,
+                        ( unsigned long ) receiverReport.pReceptionReports[ 0 ].sourceSsrc,
                         receiverReport.pReceptionReports[ 0 ].fractionLost,
-                        receiverReport.pReceptionReports[ 0 ].cumulativePacketsLost,
-                        receiverReport.pReceptionReports[ 0 ].extendedHighestSeqNumReceived,
-                        receiverReport.pReceptionReports[ 0 ].interArrivalJitter,
-                        receiverReport.pReceptionReports[ 0 ].lastSR,
-                        receiverReport.pReceptionReports[ 0 ].delaySinceLastSR ) );
+                        ( unsigned long ) receiverReport.pReceptionReports[ 0 ].cumulativePacketsLost,
+                        ( unsigned long ) receiverReport.pReceptionReports[ 0 ].extendedHighestSeqNumReceived,
+                        ( unsigned long ) receiverReport.pReceptionReports[ 0 ].interArrivalJitter,
+                        ( unsigned long ) receiverReport.pReceptionReports[ 0 ].lastSR,
+                        ( unsigned long ) receiverReport.pReceptionReports[ 0 ].delaySinceLastSR ) );
 
             if( ret == PEER_CONNECTION_RESULT_UNKNOWN_SSRC )
             {
-                LogWarn( ( "Received receiver report for non existing ssrc: %lu", receiverReport.pReceptionReports[ 0 ].sourceSsrc ) );
+                LogWarn( ( "Received receiver report for non existing ssrc: %lu", ( unsigned long ) receiverReport.pReceptionReports[ 0 ].sourceSsrc ) );
                 ret = PEER_CONNECTION_RESULT_OK;
                 continue;
             }
@@ -755,11 +755,11 @@ static PeerConnectionResult_t OnRtcpReceiverReportEvent( PeerConnectionSession_t
 
                 if( pTransceiver->trackKind == TRANSCEIVER_TRACK_KIND_AUDIO )
                 {
-                    LogVerbose( ( "RTCP_PACKET_TYPE_RECEIVER_REPORT Round Trip Propagation Delay for Audio : %lu ms", roundTripPropagationDelay ) );
+                    LogVerbose( ( "RTCP_PACKET_TYPE_RECEIVER_REPORT Round Trip Propagation Delay for Audio : %lu ms", ( unsigned long ) roundTripPropagationDelay ) );
                 }
                 else if( pTransceiver->trackKind == TRANSCEIVER_TRACK_KIND_VIDEO )
                 {
-                    LogVerbose( ( "RTCP_PACKET_TYPE_RECEIVER_REPORT Round Trip Propagation Delay for Video : %lu ms", roundTripPropagationDelay ) );
+                    LogVerbose( ( "RTCP_PACKET_TYPE_RECEIVER_REPORT Round Trip Propagation Delay for Video : %lu ms", ( unsigned long ) roundTripPropagationDelay ) );
                 }
             }
         }

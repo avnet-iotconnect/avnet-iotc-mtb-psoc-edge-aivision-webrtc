@@ -620,7 +620,7 @@ static void AddHostCandidate( IceControllerContext_t * pCtx,
             {
                 /* Free resource that already created. */
                 IceControllerNet_FreeSocketContext( pCtx, pSocketContext );
-                LogError( ( "Fail to send local candidate, ret: %ld.", retLocalCandidateReady ) );
+                LogError( ( "Fail to send local candidate, ret: %ld.", ( long ) retLocalCandidateReady ) );
                 ret = ICE_CONTROLLER_RESULT_CANDIDATE_SEND_FAIL;
             }
         }
@@ -1507,7 +1507,7 @@ IceControllerResult_t IceControllerNet_HandleStunPacket( IceControllerContext_t 
                     else
                     {
                         /* Free resource that already created. */
-                        LogWarn( ( "Fail to send server reflexive candidate to remote peer, ret: %ld.", retLocalCandidateReady ) );
+                        LogWarn( ( "Fail to send server reflexive candidate to remote peer, ret: %ld.", ( long ) retLocalCandidateReady ) );
                     }
                 }
                 else
@@ -1539,7 +1539,7 @@ IceControllerResult_t IceControllerNet_HandleStunPacket( IceControllerContext_t 
                     else
                     {
                         /* Free resource that already created. */
-                        LogWarn( ( "Fail to send relay candidate to remote peer, ret: %ld.", retLocalCandidateReady ) );
+                        LogWarn( ( "Fail to send relay candidate to remote peer, ret: %ld.", ( long ) retLocalCandidateReady ) );
                     }
 
                     pCtx->metrics.pendingRelayCandidateNum--;
